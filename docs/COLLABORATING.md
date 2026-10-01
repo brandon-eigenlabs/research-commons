@@ -175,7 +175,12 @@ error: cl-… declares an ingest policy (ingest_policy) but its spec is not held
 then run `commons fetch cl-…` to get the policy and retry. `--allow-unchecked-ingest`
 publishes without applying it, and records that choice in the ledger where `verify` and
 `status` will show it. Prefer the fetch: this gate refuses rather than warns precisely
-because a leak cannot be taken back once the bytes replicate. See the README's
+because a leak cannot be taken back once the bytes replicate.
+
+If the collection you name has been superseded, you get a warning naming the current
+version: link that one instead, or your claim is listed only under the retired id. The policy
+applied is still the union of every maintainer-signed version from the one you named onward,
+so naming an old id never escapes a policy a maintainer added later. See the README's
 **Topic-scoped forbidden field names**.
 
 ## 5. Hub lead: review and ingest

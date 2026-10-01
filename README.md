@@ -703,6 +703,7 @@ publish replicates, `retract` is best-effort recall and not erasure. So:
 |---|---|
 | policy held locally | applied; a hit **refuses**, with no override — publish different bytes |
 | collection held manifest-only, and its manifest carries `ingest_policy` | **refuses**: `commons fetch cl-…` to get the policy, or `--allow-unchecked-ingest` to publish without it |
+| collection superseded by maintainer-signed version(s) | **warns**, naming the current version(s); the policy applied is the union across that lineage (below) |
 | no policy flagged | unchanged from today |
 | no `part-of` link | unchanged from today |
 
@@ -715,6 +716,24 @@ a flag over a spec with no policy enforces nothing. Since manifest fields sit ou
 `SIGNED_FIELDS` a peer could strip the flag, so `hub check` compares the two where both are
 held, and also applies policies **read from `--base`** to artifacts added in a PR — the
 backstop for a contributor whose tool never ran the gate.
+
+**A superseded collection keeps its successors' policies.** Collections are content-addressed,
+so the usual way to *add* a policy is to supersede, and the old id keeps circulating. A
+`part-of` claim therefore gets the **union** of the named collection's policy and the policy of
+every version reachable from it by *maintainer-signed* supersedes, forks included (each branch
+counts). Following the lineage only ever tightens: a later version that drops a key does not
+relax a claim against an earlier one, and a "successor" not signed by a maintainer of the
+collection it supersedes is ignored, so it can neither relax nor add keys. A part-of at a
+superseded collection always warns, policy or not, naming the current version(s), because
+the claim is listed under the retired id where maintainers are unlikely to look; when the
+lineage contributed keys, the output says which version each came from. The lazy-replication
+cases fail closed the same way: a successor whose manifest carries `ingest_policy` but whose
+spec is not held refuses, and so does a flagged later version past an intermediate whose spec
+is not held (without that spec there is no saying whether the next hop was maintainer-signed;
+`commons fetch` the intermediate). A version whose manifest is not held at all carries no flag
+to see, the same known hole as a collection held not at all. `hub check --base` resolves the
+lineage the same way, with the successors, their specs and their ledger signatures all read
+**at base**.
 
 `--allow-unchecked-ingest` is recorded in the publish ledger event and shown by `verify` and
 `status`, so a deliberate skip is visible rather than silent. **A denylist is only a floor:**
