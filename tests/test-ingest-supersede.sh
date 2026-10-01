@@ -14,6 +14,9 @@
 #   5. lazy replication fails CLOSED: a flagged successor whose spec is not held, or a
 #      flagged version past an unheld intermediate, is `unchecked`
 #   6. `hub check --base` applies the same union, with the lineage read from git at base
+#   7. nothing stops silently: no length limit on the lineage or on the superseders past
+#      an unheld spec, an UNVERIFIED successor carrying a policy is `unchecked` rather
+#      than dropped, and malformed manifests or ledger lines cannot crash the gate
 #
 # The display half of the original report (`collection show <tip>` does not list claims
 # made against its predecessors) is split out to #8 and is not tested here.
@@ -147,6 +150,8 @@ check "  on the original's own key" "$(grep -c "BLOCK $N1 line 1: forbidden key 
 check "  and the original is not reported as superseded" "$(grep -c 'has been superseded' "$W/err.txt")" "0"
 check "it cannot tighten either: its own key is not applied" "$(pubds "$(csv ts,usd)" "$N1")" "0"
 check "  nothing about usd is reported" "$(grep -c "forbidden key 'usd'" "$W/err.txt")" "0"
+check "  but a note says a policy-bearing successor was ignored, and why" \
+  "$(grep -c "$N2: supersedes $N1 and declares an ingest policy, but is not signed by a maintainer of $N1, so it is ignored" "$W/err.txt")" "1"
 
 # ---------------------------------------------------------------- forks
 head_ "a fork: the union across every maintainer-signed branch"
@@ -210,8 +215,120 @@ Q3=$(pubcoll "unheld middle, no flag" "" "$Q2")
 QB=$(blob_of "$Q2"); mv "$COMMONS_ROOT/store/sha256/${QB:0:2}/$QB" "$W/stash-q2"
 check "an unheld intermediate with no flagged later version publishes" "$(pubds "$(csv ts,j)" "$Q1")" "0"
 check "  with a note that the rest of the chain could not be checked" \
-  "$(grep -c "$Q2: spec not held here, so its successor(s) $Q3 cannot be checked" "$W/err.txt")" "1"
+  "$(grep -c "$Q2: spec not held here, so 1 later version(s) ($Q3) cannot be checked" "$W/err.txt")" "1"
 mv "$W/stash-q2" "$COMMONS_ROOT/store/sha256/${QB:0:2}/$QB"
+
+# ---------------------------------------------------------------- no silent limits
+# Review of the first cut: the walk stopped silently after 64 versions, and the walk past
+# an unheld spec stopped after 64 superseders. Either way, what lay past the limit was
+# never applied, and both limits are reachable: every add-member publishes a version, and
+# anyone can publish superseders of anything.
+head_ "a long honest lineage: the policy in version 66 still applies to version 1"
+L1=$(pubcoll "long lineage" ""); LP="$L1"
+for _ in $(seq 2 65); do LP=$(pubcoll "long lineage" "" "$LP"); done
+L66=$(pubcoll "long lineage" "$ACCT" "$LP")
+check "fixture: 66 distinct versions" \
+  "$(cat "$COMMONS_ROOT"/registry/artifacts/cl-*.json | grep -c '"title": "C: long lineage')" "66"
+check "a leak part-of version 1 is refused" "$(pubds "$(csv ts,account_id,long)" "$L1")" "1"
+check "  attributed to version 66" "$(grep -c "forbidden key 'account_id'.*(policy of $L66)" "$W/err.txt")" "1"
+check "  and version 66 is named as current" "$(grep -c "$L1 has been superseded (current: $L66)" "$W/err.txt")" "1"
+
+head_ "a flood of junk superseders cannot hide a flagged version past an unheld spec"
+X1=$(pubcoll "flood target" "")
+X2=$(pubcoll "flood target" "$ACCT" "$X1")
+# 64 junk collections superseding X1, with ids that SORT BEFORE X2: under the old limit
+# they filled the walk and X2 was never looked at. Hand-assembled (no ledger entries)
+# because who signed them does not matter past an unheld spec, and it keeps this fast.
+python3 - "$COMMONS_ROOT" "$X1" "$X2" "$OADDR" <<'PY'
+import hashlib, json, os, sys
+root, x1, x2, oaddr = sys.argv[1:5]
+made, i = [], 0
+while len(made) < 64:
+    i += 1
+    raw = json.dumps({"scope": "junk %d" % i, "members": [],
+                      "maintainers": [{"agent": "o", "addr": oaddr}]}).encode()
+    d = hashlib.sha256(raw).hexdigest(); cid = "cl-" + d[:8]
+    if cid >= x2:
+        continue
+    os.makedirs(os.path.join(root, "store", "sha256", d[:2]), exist_ok=True)
+    open(os.path.join(root, "store", "sha256", d[:2], d), "wb").write(raw)
+    json.dump({"id": cid, "type": "collection", "schema": "rc.v1", "title": "junk",
+               "agent": "outsider", "created": "2026-09-30T00:00:00Z", "description": "",
+               "tags": [], "content": {"sha256": d, "filename": "junk.json", "bytes": len(raw)},
+               "links": [{"rel": "supersedes", "id": x1}], "license": "CC-BY-4.0"},
+              open(os.path.join(root, "registry", "artifacts", cid + ".json"), "w"))
+    made.append((cid, d))
+open(os.path.join(root, "junk.list"), "w").write("\n".join("%s %s" % m for m in made) + "\n")
+PY
+check "fixture: 64 junk superseders, all sorting before the real successor" \
+  "$(awk -v x="$X2" '$1 < x' "$COMMONS_ROOT/junk.list" | wc -l | tr -d ' ')" "64"
+XB=$(blob_of "$X1"); mv "$COMMONS_ROOT/store/sha256/${XB:0:2}/$XB" "$W/stash-x1"
+check "clean data part-of the unheld version is still refused" "$(pubds "$(csv ts,flood)" "$X1")" "1"
+check "  naming the flagged real successor" \
+  "$(grep -c "$X2: ingest_policy (it supersedes $X1, whose spec is not held here" "$W/err.txt")" "1"
+check "  and no junk superseder as unchecked" \
+  "$(grep -c "^         cl-[0-9a-f]*: ingest_policy" "$W/err.txt")" "1"
+mv "$W/stash-x1" "$COMMONS_ROOT/store/sha256/${XB:0:2}/$XB"
+while read -r jid jd; do
+  rm -f "$COMMONS_ROOT/registry/artifacts/$jid.json" "$COMMONS_ROOT/store/sha256/${jd:0:2}/$jd"
+done < "$COMMONS_ROOT/junk.list"
+
+head_ "a maintainer's successor with no verified signature: unchecked, not dropped"
+Y1=$(pubcoll "unsigned successor" "")
+mkcoll "$W/y2.json" "unsigned successor (v2)" "$ADDR" "$ACCT"
+# Published with no signing key: an unsigned entry, exactly what a maintainer without
+# COMMONS_SIGNING_KEY set leaves behind. The policy must not be lost silently.
+Y2=$(env -u COMMONS_SIGNING_KEY "$COMMONS" publish collection "$W/y2.json" "C: unsigned v2" \
+     --license CC-BY-4.0 --link "supersedes:$Y1" 2>/dev/null | tail -1)
+check "fixture: the unsigned successor exists" "$(echo "$Y2" | grep -c '^cl-')" "1"
+check "a leak part-of the first version is refused" "$(pubds "$(csv ts,account_id,unsigned)" "$Y1")" "1"
+check "  as unchecked, saying the successor has no verified signed publish" \
+  "$(grep -c "$Y2: ingest_policy (it supersedes $Y1 but has no verified signed publish here" "$W/err.txt")" "1"
+check "  offering a pull for the signed publish" \
+  "$(grep -c "commons pull <remote>   # get a signed publish of $Y2" "$W/err.txt")" "1"
+check "  and not a blob fetch, which would not help" "$(grep -c "commons fetch $Y2" "$W/err.txt")" "0"
+check "--allow-unchecked-ingest publishes" "$(pubds "$(csv ts,unsigned2)" "$Y1" --allow-unchecked-ingest)" "0"
+check "  warning which version was not applied" \
+  "$(grep -c "$Y1: ingest policy NOT applied (--allow-unchecked-ingest) for $Y2" "$W/err.txt")" "1"
+Z1=$(pubcoll "unsigned, no policy" "")
+mkcoll "$W/z2.json" "unsigned, no policy (v2)" "$ADDR" ""
+Z2=$(env -u COMMONS_SIGNING_KEY "$COMMONS" publish collection "$W/z2.json" "C: unsigned z2" \
+     --license CC-BY-4.0 --link "supersedes:$Z1" 2>/dev/null | tail -1)
+check "an unsigned successor with no policy does not refuse" "$(pubds "$(csv ts,account_id,z)" "$Z1")" "0"
+check "  but a note says it was not followed" \
+  "$(grep -c "$Z2: supersedes $Z1 but has no verified signed publish here; not followed" "$W/err.txt")" "1"
+
+head_ "malformed manifests and ledger lines cannot crash the gate"
+python3 - "$COMMONS_ROOT" "$V1" <<'PY'
+import json, os, sys
+root, v1 = sys.argv[1:3]
+art = os.path.join(root, "registry", "artifacts")
+bad = {
+    "cl-badlink1": {"id": "cl-badlink1", "type": "collection", "links": "supersedes:" + v1},
+    "cl-badlink2": {"id": "cl-badlink2", "type": "collection",
+                    "links": [{"rel": "supersedes", "id": 7}, "x", None]},
+    "cl-badcont1": {"id": "cl-badcont1", "type": "collection", "content": ["no"],
+                    "links": [{"rel": "supersedes", "id": v1}]},
+    "cl-badid001": {"id": ["cl-x"], "type": "collection",
+                    "links": [{"rel": "supersedes", "id": v1}]},
+}
+for name, m in bad.items():
+    json.dump(m, open(os.path.join(art, name + ".json"), "w"))
+open(os.path.join(art, "cl-notjson1.json"), "w").write("{not json")
+with open(os.path.join(root, "registry", "ledger", "zz-malformed.jsonl"), "w") as f:
+    for e in ({"action": "publish", "id": ["x"], "sig": "0x00"},
+              {"action": "publish", "id": "cl-badcont1", "sig": 5, "addr": 7},
+              {"action": "publish", "id": "cl-badcont1", "sig": "0x00", "addr": ["a"]}):
+        f.write(json.dumps(e) + "\n")
+    f.write("[1,2]\n")
+PY
+check "a leak part-of v1 is still refused with junk in the registry" "$(pubds "$(csv ts,account_id,junk)" "$V1")" "1"
+check "  for the real policy" "$(grep -c "forbidden key 'account_id'.*(policy of $V2)" "$W/err.txt")" "1"
+check "  with no traceback" "$(grep -c Traceback "$W/err.txt")" "0"
+for f in cl-badlink1 cl-badlink2 cl-badcont1 cl-badid001 cl-notjson1; do
+  rm -f "$COMMONS_ROOT/registry/artifacts/$f.json"
+done
+rm -f "$COMMONS_ROOT/registry/ledger/zz-malformed.jsonl"
 
 # ---------------------------------------------------------------- hub check --base
 head_ "hub check --base: the same union, with the lineage read at base"

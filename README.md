@@ -730,8 +730,16 @@ lineage contributed keys, the output says which version each came from. The lazy
 cases fail closed the same way: a successor whose manifest carries `ingest_policy` but whose
 spec is not held refuses, and so does a flagged later version past an intermediate whose spec
 is not held (without that spec there is no saying whether the next hop was maintainer-signed;
-`commons fetch` the intermediate). A version whose manifest is not held at all carries no flag
-to see, the same known hole as a collection held not at all. `hub check --base` resolves the
+`commons fetch` the intermediate). A successor with **no verified signature** here (published
+without a signing key, or whose ledger entry is not held) may still be a maintainer's, so if it
+or anything after it carries a policy that is unchecked too (`commons pull` its publisher's
+ledger); without a policy it is noted and not followed. A successor verified as signed by a
+non-maintainer is ignored, with a note when it carries a policy. The walk has **no length
+limit**: every `add-member` publishes a version, so a limit would be reached in ordinary use and
+would silently drop what lies past it. A version whose manifest is not held at all carries no flag
+to see, the same known hole as a collection held not at all. The ledger signature does not cover
+the `supersedes` link (it is outside `SIGNED_FIELDS`), so a hop is only as trustworthy as
+whoever supplied the manifest; following a forged link can only add keys. `hub check --base` resolves the
 lineage the same way, with the successors, their specs and their ledger signatures all read
 **at base**.
 
