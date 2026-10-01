@@ -9,7 +9,7 @@ manifest/ledger format version — `commons --version` prints both).
 
 ## [Unreleased]
 
-## [0.2.0-alpha.1] - UNRELEASED
+## [0.2.0-alpha.1] - 2026-10-01
 
 First tagged release. Predates this tag, the project shipped ~21 commits of untagged history
 (developed privately, 2026-07-23 through 2026-09-28) implementing verification tiers (T0/T1/T2/T3),
