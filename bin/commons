@@ -5486,18 +5486,24 @@ def run_ingest_policy_gate(a):
             print("%-5s %s line %s: %s [%s]%s"
                   % (sev.upper(), cid, lineno or "?", label, excerpt,
                      " (policy of %s)" % ", ".join(src) if src else ""), file=sys.stderr)
-        blocking += [(cid, f) for f in findings if f[0] == "block"]
+        blocking += [(cid, f, via.get(str(f[3]).strip().lower()) or [cid])
+                     for f in findings if f[0] == "block"]
     if blocking:
         # No --allow flag for this one on purpose. An unchecked policy is a gap in
         # coverage, which an operator may knowingly accept; a HIT is the policy doing its
         # job, and the fix is to publish different bytes.
+        # Name the version(s) whose policy matched; via a superseded id, that is not the
+        # id the claim cited.
+        srcs = sorted({x for _c, _f, src in blocking for x in src})
+        cited = sorted({c for c, _f, _s in blocking} - set(srcs))
         sys.exit("error: refusing to publish — %d forbidden field name(s) from the ingest "
                  "policy of %s.\n"
                  "       These identifiers are the collection's declared leak risk, not a "
                  "credential-shaped\n"
                  "       false positive, so there is no override: publish the anonymised "
                  "export instead."
-                 % (len(blocking), ", ".join(sorted({cid for cid, _ in blocking}))))
+                 % (len(blocking), ", ".join(srcs)
+                    + (" (via part-of %s)" % ", ".join(cited) if cited else "")))
     return skipped
 
 

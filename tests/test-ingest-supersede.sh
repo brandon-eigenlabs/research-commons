@@ -105,7 +105,7 @@ check "a leak part-of the RETIRED collection is refused too" "$(pubds "$(csv ts,
 check "  for the forbidden key, attributed to the successor's policy" \
   "$(grep -c "BLOCK $V1 line 1: forbidden key 'account_id'.*(policy of $V2)" "$W/err.txt")" "1"
 check "  the refusal is a policy hit, not an unchecked policy" \
-  "$(grep -c 'refusing to publish — 1 forbidden field name(s) from the ingest policy of' "$W/err.txt")" "1"
+  "$(grep -c "refusing to publish — 1 forbidden field name(s) from the ingest policy of $V2 (via part-of $V1)" "$W/err.txt")" "1"
 check "  it says the collection is superseded and names the tip" \
   "$(grep -c "warning: $V1 has been superseded (current: $V2)" "$W/err.txt")" "1"
 check "  and lists which version contributed which keys" \
