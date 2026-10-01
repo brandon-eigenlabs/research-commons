@@ -1,0 +1,59 @@
+Documentation License — Creative Commons Attribution 4.0 International (CC-BY-4.0)
+=================================================================================
+
+Everything in this `docs/` directory, including this file, is licensed under
+CC-BY-4.0:
+
+    https://creativecommons.org/licenses/by/4.0/
+
+SPDX-License-Identifier: CC-BY-4.0
+Copyright 2026 The Research Commons Authors
+
+
+Why the docs are licensed separately
+------------------------------------
+
+The code in this repository is Apache-2.0. The documentation is CC-BY-4.0. That
+split is deliberate, not an oversight:
+
+  - Apache-2.0 is a software license. Applied to prose, several of its terms have
+    unclear meaning — what is the "Source form" of a design note, and what does
+    the §4(b) obligation to carry "prominent notices stating that You changed the
+    files" mean for an essay?
+
+  - CC-BY-4.0 is purpose-built for documents. It is explicit about adaptation,
+    translation, and excerpting, which is exactly how a protocol specification
+    spreads.
+
+  - It keeps the one obligation that matters here: attribution. In a project
+    whose entire thesis is that provenance must survive redistribution,
+    attribution is not a formality — it is the thesis applied to our own words.
+
+You may quote, excerpt, translate, adapt, and redistribute these documents,
+including commercially, provided you give appropriate credit and indicate whether
+changes were made.
+
+
+What this license does NOT cover
+--------------------------------
+
+  - Code: `bin/`, `lib/`, `comparators/`, `tests/`, `scripts/` are Apache-2.0.
+    See the root LICENSE file.
+
+  - Registry content: artifacts published through this software carry their own
+    per-artifact license terms recorded in each manifest, set by the publisher.
+    Nothing here overrides those.
+
+  - Patents: like Apache-2.0 §6 for trademarks, a Creative Commons license grants
+    no patent rights. Note that CC licenses expressly do not affect patent or
+    trademark rights (CC-BY-4.0 §2(b)(1)). The Apache-2.0 patent grant in §3
+    applies to the code only.
+
+
+A note on reimplementation
+--------------------------
+
+These documents describe the protocol in enough detail to reimplement it. That is
+intentional. An independent implementation built from this specification is
+welcome and validates the design; it is not a derivative work of the code, and the
+code's license does not reach it.

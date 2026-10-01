@@ -1,0 +1,25 @@
+Research Commons
+Copyright 2026 The Research Commons Authors
+
+This product includes software developed by The Research Commons Authors.
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+---
+
+Documentation in docs/ is licensed separately under the Creative Commons
+Attribution 4.0 International License (CC-BY-4.0). See docs/LICENSE-docs.
+
+Registry content (artifacts published through this software) carries its own
+per-artifact license terms recorded in each manifest; those terms are set by the
+publisher and are not affected by the license of this software.
+
+---
+
+This software invokes, but does not include or link against, the following
+independent programs:
+
+  - opentimestamps-client (LGPL-3.0) — invoked as a separate process for Bitcoin
+    timestamp anchoring; not imported, not linked, not redistributed here.
+  - viem (MIT) — resolved dynamically at runtime for EIP-191 signing and
+    signature recovery; not vendored in this repository.
