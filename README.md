@@ -376,6 +376,11 @@ $COMMONS publish task spec.json "…" --method sk-…   # copy the rubric into a
 - `applies:sk-…` means "I followed this method". It is **not** an evidence relation: a
   flawless application of a bad method is still a bad analysis, so the grade comes from the
   data, never the procedure. Publish refuses `applies` at a non-skill.
+- `category:<slug>` is **free text**: publish checks only that it is kebab-case, and warns if
+  a `methodology` skill has none. There is no shared list, and `list --category` and
+  `collection show` match the literal string within the local hub, so two hubs that name the
+  same subject differently (`crypto-protocol`, `protocol-analysis`) will not find each
+  other's methods this way. Whether to add a suggested list is open (#16).
 - A category collection curates the method with `role: "method"` (lint: must be a skill) and
   analyses with `role: "instance"`. `collection show` then groups **method → instances →
   other**, shows `applied by N`, marks `(different method)` / `(superseded)` targets, and lists
