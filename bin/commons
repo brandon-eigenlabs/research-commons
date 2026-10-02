@@ -5433,6 +5433,7 @@ def run_ingest_policy_gate(a):
     allow = bool(getattr(a, "allow_unchecked_ingest", False))
     reader = LocalReader()
     skipped, blocking = [], []
+    seen = set()  # two cited ids from one lineage resolve the same keys: report once
     for cid in targets:
         res = resolve_ingest_policy(cid, reader)
         for nid, note in res["notes"]:
@@ -5480,7 +5481,11 @@ def run_ingest_policy_gate(a):
             continue
         # The keys we COULD read are applied even when another version was unchecked.
         via = _ingest_key_sources(res, cid)
-        findings = forbidden_key_findings(a.file, res["keys"])
+        findings = []
+        for f in forbidden_key_findings(a.file, res["keys"]):
+            if tuple(f) not in seen:
+                seen.add(tuple(f))
+                findings.append(f)
         for sev, label, lineno, excerpt in findings:
             src = via.get(str(excerpt).strip().lower())
             print("%-5s %s line %s: %s [%s]%s"
@@ -6763,6 +6768,11 @@ def hub_check_ingest_policies(base):
     at base (`GitReader(base)`): successors, their specs and the ledger entries that say who
     signed them. So a PR cannot add a successor and have it count in the same commit. Only
     a collection that does not exist at base is resolved at HEAD, as before.
+
+    The same rule, seen from the other side: a STRICTER successor added in the same PR as
+    a claim is not applied here either, because the cited id exists at base and so its
+    whole lineage is read there. The contributor's publish gate (`LocalReader`) does apply
+    it; this backstop only ever enforces what base already held.
     """
     problems = []
     added = git("diff", "--name-only", "--no-renames", "--diff-filter=A",
@@ -6773,6 +6783,7 @@ def hub_check_ingest_policies(base):
     readers = {}
     resolved = {}
     for rel in added:
+        seen = set()  # per manifest, as in the publish gate: each finding once
         m = _git_json_at("HEAD", rel)
         if not isinstance(m, dict):
             continue
@@ -6818,6 +6829,9 @@ def hub_check_ingest_policies(base):
                 body, content.get("filename") if isinstance(content.get("filename"), str)
                 and content.get("filename") else str(m.get("id")), res["keys"])
             for sev, label, lineno, excerpt in findings:
+                if (sev, label, lineno, excerpt) in seen:
+                    continue
+                seen.add((sev, label, lineno, excerpt))
                 src = via.get(str(excerpt).strip().lower())
                 if sev == "block":
                     problems.append("%s violates the ingest policy of %s: %s (line %s)%s"

@@ -113,6 +113,13 @@ check "  and lists which version contributed which keys" \
 check "clean data part-of the retired collection still publishes" "$(pubds "$(csv ts,usd)" "$V1")" "0"
 check "  with the superseded warning" "$(grep -c "$V1 has been superseded (current: $V2)" "$W/err.txt")" "1"
 
+head_ "two cited ids from one lineage report each key once"
+check "a leak part-of BOTH the retired and the current collection is refused" \
+  "$(pubds "$(csv ts,account_id,usd)" "$V1" --link "part-of:$V2")" "1"
+check "  the key is counted once, not once per cited id" \
+  "$(grep -c "refusing to publish — 1 forbidden field name(s)" "$W/err.txt")" "1"
+check "  with one BLOCK line" "$(grep -c "^BLOCK .*forbidden key 'account_id'" "$W/err.txt")" "1"
+
 head_ "warns on every part-of at a superseded collection, policy or not"
 P1=$(pubcoll "no policy anywhere" "")
 P2=$(pubcoll "no policy anywhere" "" "$P1")
