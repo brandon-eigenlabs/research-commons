@@ -5001,44 +5001,423 @@ def spec_has_ingest_policy(spec):
     return bool(isinstance(ing, dict) and (ing.get("forbidden_keys") or []))
 
 
-def ingest_policy_for(cid):
-    """Resolve a `part-of` target's forbidden-key policy.
+def _spec_forbidden_keys(spec):
+    ing = spec.get("ingest") if isinstance(spec, dict) else None
+    keys = ing.get("forbidden_keys") if isinstance(ing, dict) else None
+    return [k for k in keys if isinstance(k, str) and k] if isinstance(keys, list) else []
 
-    Returns (state, keys, note) where state is:
-      "none"      nothing to enforce — no policy, or we cannot know one exists
-      "enforce"   `keys` is the policy, read from the blob
-      "unchecked" the manifest flags a policy but the spec is not held here
 
-    A collection whose manifest we do not hold at all resolves to "none": with no
-    manifest there is no flag, and refusing would make publishing depend on having
-    replicated every collection someone might claim membership in. That is a known hole of
-    the same shape as the strippable flag, and the same thing closes it — once the blob is
-    held, the blob decides.
+def _manifest_digest(m):
+    """content.sha256 of a manifest, or "" — without trusting the manifest's shape."""
+    content = m.get("content") if isinstance(m, dict) else None
+    d = content.get("sha256") if isinstance(content, dict) else None
+    return d if isinstance(d, str) else ""
+
+
+def _spec_maintainers(spec):
+    ms = spec.get("maintainers") if isinstance(spec, dict) else None
+    return {x["addr"].lower() for x in (ms if isinstance(ms, list) else [])
+            if isinstance(x, dict) and isinstance(x.get("addr"), str) and x["addr"]}
+
+
+def _id_list(ids, limit=5):
+    ids = list(ids)
+    return ", ".join(ids[:limit]) + (" and %d more" % (len(ids) - limit)
+                                     if len(ids) > limit else "")
+
+
+class _LineageReader:
+    """Where a collection's supersede lineage is read from. One interface, two stores.
+
+    The ingest-policy resolver is the same code for both gates; only the storage differs.
+    The publish gate reads this root's store and ledgers (`LocalReader`); `hub check
+    --base` reads git at the base commit (`GitReader`), for the same reason it reads the
+    policies themselves from base. A subclass supplies four primitives:
+
+      manifest(aid)           a manifest dict, or None when not held
+      blob(digest)            the blob's raw bytes, or None when not held
+      _collection_manifests() every collection manifest held
+      _publish_entries()      every ledger entry held (only signed publishes are kept)
+
+    and inherits the lineage queries built on them. Every input is treated as untrusted
+    in shape: a malformed manifest or ledger line is skipped, never allowed to raise, since
+    one bad line would otherwise take down every claim's gate.
     """
-    m = load_manifest(cid, missing_ok=True)
-    if m is None or m.get("type") != "collection":
-        return "none", [], ""
-    flagged = bool(m.get(INGEST_POLICY_FLAG))
-    blob = blob_read_path((m.get("content") or {}).get("sha256") or "")
-    if not os.path.exists(blob):
-        return ("unchecked", [], "") if flagged else ("none", [], "")
-    try:
-        with open(blob) as f:
-            spec = json.load(f)
-    except (OSError, ValueError):
-        # The bytes are here but unreadable as a spec. If the manifest promised a policy
-        # we must not quietly enforce nothing.
-        return ("unchecked", [], "spec is held but not readable as JSON") if flagged \
-            else ("none", [], "")
-    keys = ((spec.get("ingest") or {}).get("forbidden_keys") or []) \
-        if isinstance(spec.get("ingest"), dict) else []
-    if keys and not flagged:
-        return "enforce", keys, ("manifest carries no %s but the spec declares a policy; "
-                                "the spec wins" % INGEST_POLICY_FLAG)
-    if not keys and flagged:
-        return "none", [], ("manifest carries %s but the spec declares no policy; nothing "
-                            "to enforce" % INGEST_POLICY_FLAG)
-    return ("enforce" if keys else "none"), keys, ""
+
+    def __init__(self):
+        self._sup = None
+        self._pubs = None
+        self._signers = {}
+
+    def superseders(self, cid):
+        """Collections whose manifest links `supersedes:cid`, WHOEVER signed them."""
+        if self._sup is None:
+            self._sup = {}
+            for m in self._collection_manifests():
+                mid, links = m.get("id"), m.get("links")
+                if not isinstance(mid, str) or not isinstance(links, list):
+                    continue
+                for link in links:
+                    if isinstance(link, dict) and link.get("rel") == "supersedes" \
+                            and isinstance(link.get("id"), str) and link["id"]:
+                        self._sup.setdefault(link["id"], set()).add(mid)
+        return sorted(self._sup.get(cid, ()))
+
+    def _publishes(self):
+        if self._pubs is None:
+            self._pubs = {}
+            for e in self._publish_entries():
+                if not isinstance(e, dict) or e.get("action") not in ("publish", "republish"):
+                    continue
+                aid, sig, addr = e.get("id"), e.get("sig"), e.get("addr")
+                if isinstance(aid, str) and aid and isinstance(sig, str) and sig \
+                        and (addr is None or isinstance(addr, str)):
+                    self._pubs.setdefault(aid, []).append(e)
+        return self._pubs
+
+    def signers_of(self, ids):
+        """{aid: addresses with a VERIFIED signed publish/republish of aid}.
+
+        Verifies only the entries for `ids`, in one batch, and caches per id: the whole
+        ledger is not this gate's business.
+        """
+        todo = [a for a in ids if a not in self._signers]
+        if todo:
+            pubs = self._publishes()
+            prime_verify_cache([e for a in todo for e in pubs.get(a, [])])
+            for a in todo:
+                got = set()
+                for e in pubs.get(a, []):
+                    ok, rec = verify_entry(e, e["sig"], e.get("addr"))
+                    if ok:
+                        got.add((rec if isinstance(rec, str) and rec
+                                 else e.get("addr") or "").lower())
+                self._signers[a] = got
+        return {a: self._signers[a] for a in ids}
+
+    def has_policy(self, aid):
+        """aid's manifest flags a policy, or its spec, where held, declares one."""
+        m = self.manifest(aid)
+        if not isinstance(m, dict):
+            return False
+        if m.get(INGEST_POLICY_FLAG):
+            return True
+        raw = self.blob(_manifest_digest(m))
+        try:
+            return raw is not None and bool(_spec_forbidden_keys(json.loads(raw)))
+        except ValueError:
+            return False
+
+    def classify_successors(self, cid, spec):
+        """Split `cid`'s superseders into (maintainer-signed, unverified, other-signed).
+
+        maintainer-signed  a verified publish by one of `cid`'s OWN maintainers — the same
+                           comparison `supersede_decision` makes. Any verified publish, not
+                           only the first: first-publisher adjudication is about priority
+                           and needs anchor files a base tree may not carry, and for a
+                           policy union counting more hops only adds keys.
+        unverified         no verified signed publish of it here at all: unsigned, its
+                           ledger entry not held, or a signature that does not verify. It
+                           may be a maintainer's, so the caller must not just drop it.
+        other-signed       verified, and signed by someone who is not a maintainer of
+                           `cid`. Ignored: otherwise any peer could choose a claimant's
+                           policy. (A maintainer who rotated keys without updating the
+                           spec lands here too; the caller says so when it matters.)
+        """
+        sups = self.superseders(cid)
+        if not sups:
+            return [], [], []
+        maint, sig = _spec_maintainers(spec), self.signers_of(sups)
+        return ([s for s in sups if sig[s] & maint],
+                [s for s in sups if not sig[s]],
+                [s for s in sups if sig[s] and not sig[s] & maint])
+
+
+class LocalReader(_LineageReader):
+    """This root's store and ledgers: what the publish gate can see."""
+    where = "here"
+
+    def manifest(self, aid):
+        if not isinstance(aid, str) or not aid:
+            return None
+        p = manifest_path(aid)
+        if not os.path.exists(p):
+            return None
+        try:
+            with open(p) as f:
+                m = json.load(f)
+        except (OSError, ValueError):
+            return None
+        return m if isinstance(m, dict) else None
+
+    def blob(self, digest):
+        if not isinstance(digest, str) or not digest:
+            return None
+        p = blob_read_path(digest)
+        if not os.path.exists(p):
+            return None
+        try:
+            with open(p, "rb") as f:
+                return f.read()
+        except OSError:
+            return None
+
+    def _collection_manifests(self):
+        if not os.path.isdir(ART):
+            return []
+        out, prefix = [], TYPES["collection"] + "-"
+        for fn in sorted(os.listdir(ART)):
+            # Collection ids are `cl-<hash>`: skip every other manifest before parsing it.
+            if fn.startswith(prefix) and fn.endswith(".json"):
+                m = self.manifest(fn[:-5])
+                if m and m.get("type") == "collection" and isinstance(m.get("id"), str):
+                    out.append(m)
+        return out
+
+    def _publish_entries(self):
+        return [e for e, _p, _i, _l in ledger_lines()]
+
+
+class GitReader(_LineageReader):
+    """The hub's registry and store as committed at `ref`: what `hub check --base` sees."""
+
+    def __init__(self, ref):
+        super().__init__()
+        self.ref = ref
+        self.where = "in this hub at %s" % ref[:12]
+
+    def manifest(self, aid):
+        if not isinstance(aid, str) or not aid:
+            return None
+        m = _git_json_at(self.ref, "registry/artifacts/%s.json" % aid)
+        return m if isinstance(m, dict) else None
+
+    def blob(self, digest):
+        return _git_blob_at(self.ref, digest) if isinstance(digest, str) else None
+
+    def _ls(self, path):
+        r = git("ls-tree", "-r", "--name-only", self.ref, "--", path, check=False)
+        return r.stdout.split() if r.returncode == 0 else []
+
+    def _collection_manifests(self):
+        out = []
+        for rel in self._ls("registry/artifacts/"):
+            if os.path.basename(rel).startswith(TYPES["collection"] + "-") \
+                    and rel.endswith(".json"):
+                m = _git_json_at(self.ref, rel)
+                if isinstance(m, dict) and m.get("type") == "collection" \
+                        and isinstance(m.get("id"), str):
+                    out.append(m)
+        return out
+
+    def _publish_entries(self):
+        out = []
+        paths = [p for p in self._ls("registry/ledger/") if p.endswith(".jsonl")]
+        paths += self._ls("registry/ledger.jsonl")
+        for rel in paths:
+            r = git("show", "%s:%s" % (self.ref, rel), check=False)
+            if r.returncode != 0:
+                continue
+            for line in r.stdout.splitlines():
+                try:
+                    e = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(e, dict):
+                    out.append(e)
+        return out
+
+
+def resolve_ingest_policy(cid, reader):
+    """The forbidden-key policy that applies to a `part-of:<cid>` claim (issue #11).
+
+    It is the UNION of `cid`'s own policy and that of every collection reachable from it by
+    maintainer-signed supersedes, forks included. Following the chain only ever tightens:
+      - not tip-only, because a later version that drops a key must not take protection
+        away from someone citing the stricter version;
+      - not any-supersede, because then any peer could publish a "successor" and choose
+        which policy a claimant gets. A hop counts only when one of the superseded
+        collection's own maintainers signed it (`classify_successors`);
+      - at a fork, every branch counts. Unlike `add-member`, which must pick one spec to
+        republish, a union needs no editorial choice.
+
+    There is NO length limit on the walk. Every `add-member` publishes a new version, so an
+    honest collection reaches any fixed limit in ordinary use, and a limit that stops
+    silently is a bypass: the keys past it are simply never applied. `seen` makes the walk
+    terminate (cycles included), and each held collection is visited at most once, so the
+    cost is bounded by what the reader holds.
+
+    `reader` decides where the lineage is read from (`LocalReader`, `GitReader`). Both
+    gates call this, so they cannot drift apart.
+
+    Returns a dict:
+      state      "none" | "enforce" | "unchecked" ("unchecked" wins over "enforce": the
+                 keys that could be read are still in `keys` and are still applied)
+      keys       the union, in first-seen order
+      sources    [(collection id, its keys)] for each version that contributed a key
+      superseded maintainer-signed successors of `cid` itself (empty when current)
+      tips       the current version(s): ends of the maintainer-signed lineage
+      unchecked  [(collection id, reason, id to fetch or None)] versions whose policy
+                 applies, or may apply, but cannot be read or verified here
+      notes      [(collection id, text)] flag/spec disagreements, hops that could not be
+                 verified, and policy-bearing successors that were ignored
+
+    Fails CLOSED wherever a hop cannot be verified, the same way the single-collection
+    gate does for an unheld spec. "Carries a policy" below means the manifest flags one, or
+    its spec, where held, declares one.
+      - A version whose manifest carries the flag but whose spec is not held: `unchecked`.
+      - A version whose spec is not held cannot say which of its supersedes were
+        maintainer-signed. So every later version reachable through it by supersedes,
+        whoever signed them, that carries a policy is `unchecked` too.
+      - A successor with NO verified signed publish here (unsigned, ledger entry not held,
+        or a bad signature) might still be a maintainer's. If it, or anything reachable
+        through it, carries a policy, that is `unchecked`; otherwise a note says it was
+        not followed.
+      - A successor verified as signed by someone who is NOT a maintainer is ignored, as
+        it must be, with a note when it carries a policy.
+
+    Trust in a hop is bounded by the manifest. The ledger signature covers SIGNED_FIELDS
+    (action, agent, id, sha256, ts), and the `supersedes` link is not among them. So a
+    maintainer-signed publish proves the maintainer published those bytes as that id. It
+    does not prove they declared the link. A party holding the manifest could add a
+    `supersedes` link to a maintainer's unrelated collection. Following such a link can
+    only ADD keys, so the union stays fail-safe, but the lineage reported is only as
+    trustworthy as whoever supplied the manifests.
+
+    The known hole, the same one the single-collection gate has: a version whose MANIFEST
+    is not held at all carries no flag to see. If `cid` itself is not held, or past an
+    unverifiable hop no manifest carrying a policy is held, there is nothing to refuse on.
+    Holding the manifests, or the blobs, closes it.
+    """
+    res = {"state": "none", "keys": [], "sources": [], "superseded": [], "tips": [],
+           "unchecked": [], "notes": []}
+    root = reader.manifest(cid)
+    if not isinstance(root, dict) or root.get("type") != "collection":
+        return res
+    seen_keys, unchecked = set(), {}
+    queue, seen = [cid], {cid}
+
+    def past(starts):
+        """Every version reachable from `starts` by supersedes, whoever signed them."""
+        out, stack = [], list(starts)
+        while stack:
+            x = stack.pop(0)
+            if x in out:
+                continue
+            out.append(x)
+            stack += [y for y in reader.superseders(x) if y not in out]
+        return out
+
+    def fail_closed(versions, why, fetch):
+        """Mark each version carrying a policy `unchecked`. Returns those it marked."""
+        hit = [x for x in versions if reader.has_policy(x)]
+        for x in hit:
+            unchecked.setdefault(x, (x, why(x), fetch))
+        return hit
+
+    while queue:
+        n = queue.pop(0)
+        m = root if n == cid else reader.manifest(n)
+        if not isinstance(m, dict) or m.get("type") != "collection":
+            continue
+        flagged = bool(m.get(INGEST_POLICY_FLAG))
+        raw = reader.blob(_manifest_digest(m))
+        spec, why = None, "spec is not held %s" % reader.where
+        if raw is not None:
+            try:
+                spec = json.loads(raw)
+            except ValueError:
+                spec = None
+            if not isinstance(spec, dict):
+                spec, why = None, "spec is held but not readable as JSON"
+        if spec is None:
+            if flagged:
+                unchecked.setdefault(n, (n, why, n))
+            # Without the spec there are no maintainers to check the next hop against, so
+            # everything past here is unverifiable. Any policy out there fails closed, and
+            # it is n's spec that is missing, so n is what to fetch.
+            later = past(reader.superseders(n))
+            hit = fail_closed(
+                later, lambda x: "it supersedes %s, whose spec is not held %s, so whether "
+                                 "that hop was maintainer-signed cannot be checked"
+                                 % (n, reader.where), n)
+            if later and not hit:
+                res["notes"].append(
+                    (n, "spec not held %s, so %d later version(s) (%s) cannot be checked; "
+                        "none declares an ingest policy"
+                        % (reader.where, len(later), _id_list(later))))
+            if n != cid:
+                res["tips"].append(n)
+            continue
+        keys = _spec_forbidden_keys(spec)
+        if keys and not flagged:
+            res["notes"].append((n, "manifest carries no %s but the spec declares a policy; "
+                                    "the spec wins" % INGEST_POLICY_FLAG))
+        if not keys and flagged:
+            res["notes"].append((n, "manifest carries %s but the spec declares no policy; "
+                                    "nothing to enforce" % INGEST_POLICY_FLAG))
+        if keys:
+            res["sources"].append((n, keys))
+            for k in keys:
+                if k.lower() not in seen_keys:
+                    seen_keys.add(k.lower())
+                    res["keys"].append(k)
+        signed, unverified, others = reader.classify_successors(n, spec)
+        for s in unverified:
+            later = past([s])
+            hit = fail_closed(
+                later, lambda x, s=s: (
+                    "it supersedes %s but has no verified signed publish %s, so whether a "
+                    "maintainer of %s published it cannot be checked" % (n, reader.where, n)
+                    if x == s else
+                    "it is reached through %s, which has no verified signed publish %s"
+                    % (s, reader.where)), None)
+            if not hit:
+                res["notes"].append(
+                    (s, "supersedes %s but has no verified signed publish %s; not followed "
+                        "(declares no ingest policy%s)"
+                        % (n, reader.where, ", nor does anything after it"
+                           if len(later) > 1 else "")))
+        for s in others:
+            if reader.has_policy(s):
+                res["notes"].append(
+                    (s, "supersedes %s and declares an ingest policy, but is not signed by "
+                        "a maintainer of %s, so it is ignored (if a maintainer's key "
+                        "rotated, the spec's maintainers list needs the new key)" % (n, n)))
+        if n == cid:
+            res["superseded"] = signed
+        elif not signed:
+            res["tips"].append(n)
+        for s in signed:
+            if s not in seen:
+                seen.add(s)
+                queue.append(s)
+    res["unchecked"] = list(unchecked.values())
+    res["state"] = "unchecked" if res["unchecked"] else ("enforce" if res["keys"] else "none")
+    return res
+
+
+def _ingest_key_sources(res, cid):
+    """Lowered key -> the versions whose policy declares it, when that is not just `cid`."""
+    out = {}
+    for src, keys in res["sources"]:
+        for k in keys:
+            out.setdefault(k.lower(), [])
+            if src not in out[k.lower()]:
+                out[k.lower()].append(src)
+    return {k: v for k, v in out.items() if v != [cid]}
+
+
+def _ingest_lineage_lines(cid, res):
+    """Explain a superseded target: where the claim lands, and which versions gave keys."""
+    lines = ["%s has been superseded (current: %s). A part-of claim against it is listed "
+             "under %s,\n         not under the current version, so its maintainers may "
+             "never see it." % (cid, ", ".join(res["tips"] or res["superseded"]), cid)]
+    if res["sources"]:
+        lines.append("  ingest policy applied is the union across its maintainer-signed "
+                     "lineage:")
+        lines += ["    %s: %s" % (src, ", ".join(keys)) for src, keys in res["sources"]]
+    return lines
 
 
 def run_ingest_policy_gate(a):
@@ -5049,6 +5428,9 @@ def run_ingest_policy_gate(a):
     leak cannot be undone once the bytes replicate. `hub check` is a backstop rather than a
     substitute — it runs on a PR, and `COLLABORATING.md` documents hub leads pushing
     straight to `main`, which never sees one.
+
+    The policy for each target is `resolve_ingest_policy`'s union over the target's
+    maintainer-signed supersede lineage, read from this root (`LocalReader`).
     """
     targets = []
     for spec in (a.link or []):
@@ -5058,44 +5440,84 @@ def run_ingest_policy_gate(a):
     if not targets:
         return []
     allow = bool(getattr(a, "allow_unchecked_ingest", False))
+    reader = LocalReader()
     skipped, blocking = [], []
+    seen = set()  # two cited ids from one lineage resolve the same keys: report once
     for cid in targets:
-        state, keys, note = ingest_policy_for(cid)
-        if note:
-            print("warning: %s: %s" % (cid, note), file=sys.stderr)
-        if state == "none":
-            continue
-        if state == "unchecked":
+        res = resolve_ingest_policy(cid, reader)
+        for nid, note in res["notes"]:
+            print("warning: %s: %s" % (nid, note), file=sys.stderr)
+        if res["superseded"]:
+            # Advisory, policy or not: the claim lands on a page nobody reviews.
+            lines = _ingest_lineage_lines(cid, res)
+            print("\n".join(["warning: " + lines[0]] + lines[1:]), file=sys.stderr)
+        if res["unchecked"]:
             if not allow:
-                sys.exit("error: %s declares an ingest policy (%s) but its spec is not held "
-                         "here, so\n"
-                         "       the policy cannot be applied to %s.\n"
-                         "         commons fetch %s        # get the policy, then retry\n"
-                         "         --allow-unchecked-ingest  # publish without applying it\n"
-                         "       Refusing rather than warning: once a blob replicates, "
-                         "retraction is\n"
-                         "       best-effort recall and not erasure."
-                         % (cid, INGEST_POLICY_FLAG, os.path.basename(a.file), cid))
+                if [(n, f) for n, _w, f in res["unchecked"]] == [(cid, cid)]:
+                    sys.exit("error: %s declares an ingest policy (%s) but its spec is not "
+                             "held here, so\n"
+                             "       the policy cannot be applied to %s.\n"
+                             "         commons fetch %s        # get the policy, then retry\n"
+                             "         --allow-unchecked-ingest  # publish without applying it\n"
+                             "       Refusing rather than warning: once a blob replicates, "
+                             "retraction is\n"
+                             "       best-effort recall and not erasure."
+                             % (cid, INGEST_POLICY_FLAG, os.path.basename(a.file), cid))
+                lines = ["error: the ingest policy that applies to part-of %s cannot be "
+                         "fully read here, so it\n"
+                         "       cannot be applied to %s:" % (cid, os.path.basename(a.file))]
+                lines += ["         %s: %s (%s)" % (nid, INGEST_POLICY_FLAG, why)
+                          for nid, why, _f in res["unchecked"]]
+                lines += ["         commons fetch %s        # get the policy, then retry" % f
+                          for f in dict.fromkeys(f for _n, _w, f in res["unchecked"] if f)]
+                # An unverified hop is not fixed by a blob fetch: what is missing is a
+                # signed publish entry, which arrives with its publisher's ledger.
+                lines += ["         commons pull <remote>   # get a signed publish of %s, "
+                          "then retry" % n
+                          for n in dict.fromkeys(n for n, _w, f in res["unchecked"] if not f)]
+                lines += ["         --allow-unchecked-ingest  # publish without applying it",
+                          "       Refusing rather than warning: once a blob replicates, "
+                          "retraction is\n"
+                          "       best-effort recall and not erasure."]
+                sys.exit("\n".join(lines))
             skipped.append(cid)
-            print("warning: %s: ingest policy NOT applied (--allow-unchecked-ingest); "
-                  "recorded in the ledger" % cid, file=sys.stderr)
+            print("warning: %s: ingest policy NOT applied (--allow-unchecked-ingest)%s; "
+                  "recorded in the ledger"
+                  % (cid, "" if [n for n, _w, _f in res["unchecked"]] == [cid] else
+                     " for %s" % ", ".join(dict.fromkeys(n for n, _w, _f in res["unchecked"]))),
+                  file=sys.stderr)
+        if not res["keys"]:
             continue
-        findings = forbidden_key_findings(a.file, keys)
+        # The keys we COULD read are applied even when another version was unchecked.
+        via = _ingest_key_sources(res, cid)
+        findings = []
+        for f in forbidden_key_findings(a.file, res["keys"]):
+            if tuple(f) not in seen:
+                seen.add(tuple(f))
+                findings.append(f)
         for sev, label, lineno, excerpt in findings:
-            print("%-5s %s line %s: %s [%s]"
-                  % (sev.upper(), cid, lineno or "?", label, excerpt), file=sys.stderr)
-        blocking += [(cid, f) for f in findings if f[0] == "block"]
+            src = via.get(str(excerpt).strip().lower())
+            print("%-5s %s line %s: %s [%s]%s"
+                  % (sev.upper(), cid, lineno or "?", label, excerpt,
+                     " (policy of %s)" % ", ".join(src) if src else ""), file=sys.stderr)
+        blocking += [(cid, f, via.get(str(f[3]).strip().lower()) or [cid])
+                     for f in findings if f[0] == "block"]
     if blocking:
         # No --allow flag for this one on purpose. An unchecked policy is a gap in
         # coverage, which an operator may knowingly accept; a HIT is the policy doing its
         # job, and the fix is to publish different bytes.
+        # Name the version(s) whose policy matched; via a superseded id, that is not the
+        # id the claim cited.
+        srcs = sorted({x for _c, _f, src in blocking for x in src})
+        cited = sorted({c for c, _f, _s in blocking} - set(srcs))
         sys.exit("error: refusing to publish — %d forbidden field name(s) from the ingest "
                  "policy of %s.\n"
                  "       These identifiers are the collection's declared leak risk, not a "
                  "credential-shaped\n"
                  "       false positive, so there is no override: publish the anonymised "
                  "export instead."
-                 % (len(blocking), ", ".join(sorted({cid for cid, _ in blocking}))))
+                 % (len(blocking), ", ".join(srcs)
+                    + (" (via part-of %s)" % ", ".join(cited) if cited else "")))
     return skipped
 
 
@@ -6349,6 +6771,17 @@ def hub_check_ingest_policies(base):
     store tampering rather than against an in-PR policy edit. What neither defends against
     is a contributor claiming `part-of` a brand-new collection with a laxer policy — that
     is a self-declared claim, and it only means anything once a maintainer endorses it.
+
+    The policy is `resolve_ingest_policy`'s union over the collection's maintainer-signed
+    supersede lineage, the same resolver the publish gate uses, with the lineage ALSO read
+    at base (`GitReader(base)`): successors, their specs and the ledger entries that say who
+    signed them. So a PR cannot add a successor and have it count in the same commit. Only
+    a collection that does not exist at base is resolved at HEAD, as before.
+
+    The same rule, seen from the other side: a STRICTER successor added in the same PR as
+    a claim is not applied here either, because the cited id exists at base and so its
+    whole lineage is read there. The contributor's publish gate (`LocalReader`) does apply
+    it; this backstop only ever enforces what base already held.
     """
     problems = []
     added = git("diff", "--name-only", "--no-renames", "--diff-filter=A",
@@ -6356,48 +6789,63 @@ def hub_check_ingest_policies(base):
     if not added:
         return problems
     print("check: ingest policies of part-of collections (read from %s)" % base[:12])
+    readers = {}
+    resolved = {}
     for rel in added:
+        seen = set()  # per manifest, as in the publish gate: each finding once
         m = _git_json_at("HEAD", rel)
         if not isinstance(m, dict):
             continue
-        targets = [l.get("id") for l in (m.get("links") or [])
-                   if isinstance(l, dict) and l.get("rel") == PART_OF_REL and l.get("id")]
+        links = m.get("links") if isinstance(m.get("links"), list) else []
+        targets = [l["id"] for l in links
+                   if isinstance(l, dict) and l.get("rel") == PART_OF_REL
+                   and isinstance(l.get("id"), str) and l["id"]]
         if not targets:
             continue
-        digest = (m.get("content") or {}).get("sha256") or ""
-        body = _git_blob_at("HEAD", digest)
+        content = m.get("content") if isinstance(m.get("content"), dict) else {}
+        body = _git_blob_at("HEAD", _manifest_digest(m))
         for cid in targets:
-            crel = "registry/artifacts/%s.json" % cid
-            cm = _git_json_at(base, crel) or _git_json_at("HEAD", crel)
-            if not isinstance(cm, dict) or cm.get("type") != "collection":
-                continue
-            src = base if _git_json_at(base, crel) else "HEAD"
-            spec = None
-            raw = _git_blob_at(src, (cm.get("content") or {}).get("sha256") or "")
-            if raw is not None:
-                try:
-                    spec = json.loads(raw)
-                except ValueError:
-                    spec = None
-            if spec is None:
-                if cm.get(INGEST_POLICY_FLAG):
+            if cid not in resolved:
+                crel = "registry/artifacts/%s.json" % cid
+                src = base if _git_json_at(base, crel) is not None else "HEAD"
+                reader = readers.setdefault(src, GitReader(src))
+                resolved[cid] = resolve_ingest_policy(cid, reader)
+                res = resolved[cid]
+                for nid, note in res["notes"]:
+                    print("  note: %s: %s" % (nid, note))
+            res = resolved[cid]
+            if res["superseded"]:
+                print("  note: %s claims part-of %s, which is superseded (current: %s)"
+                      % (m.get("id"), cid, ", ".join(res["tips"] or res["superseded"])))
+                for s, keys in res["sources"]:
+                    print("    policy of %s: %s" % (s, ", ".join(keys)))
+            for nid, why, _fetch in res["unchecked"]:
+                if nid == cid:
                     problems.append("%s claims part-of %s, whose ingest policy is not in "
                                     "this hub (cannot check)" % (m.get("id"), cid))
-                continue
-            keys = ((spec.get("ingest") or {}).get("forbidden_keys") or []) \
-                if isinstance(spec.get("ingest"), dict) else []
-            if not keys:
+                else:
+                    problems.append("%s claims part-of %s, whose successor %s declares an "
+                                    "ingest policy that cannot be checked: %s"
+                                    % (m.get("id"), cid, nid, why))
+            if not res["keys"]:
                 continue
             if body is None:
                 problems.append("%s claims part-of %s (ingest policy) but its blob is not "
                                 "in this hub (cannot check)" % (m.get("id"), cid))
                 continue
+            via = _ingest_key_sources(res, cid)
             findings = _forbidden_key_findings_on_bytes(
-                body, (m.get("content") or {}).get("filename") or m.get("id"), keys)
-            for sev, label, lineno, _excerpt in findings:
+                body, content.get("filename") if isinstance(content.get("filename"), str)
+                and content.get("filename") else str(m.get("id")), res["keys"])
+            for sev, label, lineno, excerpt in findings:
+                if (sev, label, lineno, excerpt) in seen:
+                    continue
+                seen.add((sev, label, lineno, excerpt))
+                src = via.get(str(excerpt).strip().lower())
                 if sev == "block":
-                    problems.append("%s violates the ingest policy of %s: %s (line %s)"
-                                    % (m.get("id"), cid, label, lineno or "?"))
+                    problems.append("%s violates the ingest policy of %s: %s (line %s)%s"
+                                    % (m.get("id"), cid, label, lineno or "?",
+                                       " (policy of %s)" % ", ".join(src) if src else ""))
                 else:
                     print("  note: %s vs %s: %s" % (m.get("id"), cid, label))
     return problems

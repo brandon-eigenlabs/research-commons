@@ -10,6 +10,21 @@ manifest/ledger format version — `commons --version` prints both).
 ## [Unreleased]
 
 ### Fixed
+- **Ingest policy bypassed by a `part-of` claim against a superseded collection (safety fix,
+  #11).** The gate read only the collection named, so a policy added by superseding never
+  applied to claims against the old id, and `hub check --base` passed them too. A claim now gets
+  the union of the named collection's policy and that of every version reachable by
+  maintainer-signed supersedes, forks included; following the lineage only ever tightens, and
+  successors not signed by a maintainer of the collection they supersede are ignored. Output names
+  which version contributed each key. Every `part-of` at a superseded collection warns, naming
+  the current version(s). A flagged successor, or a flagged version past an intermediate, whose
+  spec is not held refuses as unchecked, with the existing `commons fetch` /
+  `--allow-unchecked-ingest` ways out. So does a policy-bearing successor with no verified
+  signature (unsigned, or its ledger entry not held). The lineage walk has no length limit. The
+  publish gate and `hub check --base` share one resolver
+  (`resolve_ingest_policy`) over a reader of the local store or of git at base, and `hub check`
+  reads the whole lineage at base. Not changed here: `collection show <tip>` still does not list
+  claims made against its predecessors (#8).
 - `publish --force` on an existing id now starts from the existing manifest: description,
   tags, links, `provenance` (inputs, workflow, run env/exec/finished), `created` and the
   verification block are kept unless their flag is passed. A `--force` that would lower the
