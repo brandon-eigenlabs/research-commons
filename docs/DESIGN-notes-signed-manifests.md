@@ -109,7 +109,7 @@ The same holds for `submit` (`task` and `result` unsigned; `task_events()` selec
 unsigned `task`), for `rebaseline` (`result=match`, `exec_mode`, `image_digest` unsigned) and
 for `settle`'s `verdict_vector`. Two consequences follow:
 
-- Duplicate signatures need to be detected now.
+- Replayed v1 authenticated identities need to be detected now.
 - The derived class in [§7](#7-the-derived-class) cannot rest on v1 entries.
 
 **G2. #42's authority rule can be laundered in two pushes.** Authority is "a verified
@@ -148,6 +148,7 @@ unsigned without anyone deciding that it should.
 | `judgement` | Publisher claim | view signature | The verdict vector T2 quorum settlement groups by (`judgement_vector_key`). As load-bearing as the tier. |
 | `generation` (`model_family`, `attestation`, …) | Publisher claim | view signature | Input to diversity quorums (`result_family`). `publish` never writes it; it is set by hand, so the view must cover whatever bytes are present (default-include does). **Signing makes the level attributable, not true.** `attestation: tee` is still the publisher's own word ([§15](#15-residual-risks-and-open-questions)). |
 | `provenance.inputs`, `provenance.workflow` | Publisher claim | view signature | The derivation the T0/T1 re-run follows. |
+| `authority`, `reproducers` | Publisher claim | view signature | Delegations for a future view (§6) or a derived reproduction stamp (§7.2). |
 | `provenance.run.{finished,env,exec}` written at publish, `provenance.run.rebaseline_of` | Publisher claim | view signature | The environment `verify` compares a re-run against (`recorded_exec`). |
 | `provenance.run.exec` + `.rebaselined` written by a `rebaseline` match | **Derived** (from v2 on) | the signed `rebaseline` event | A third party's reproduction statement, not the publisher's. Phase 2 stops writing it into the manifest ([§7](#7-the-derived-class)). Legacy values already present are covered by whoever signs the view. |
 | `rubric` | Pinned by content (hint) | the `sk-` id; re-derived from `rubric.json` in the bundle when held; also in the view | Derived from the blob at publish. Signing the hint helps peers that hold the manifest only. |
@@ -178,7 +179,7 @@ VIEW_VERSION = "manifest-view/1"
 VIEW_DROP_TOP = ("ingest", "publisher_sig")        # local-only; the statement itself
 VIEW_DROP_VERIFICATION = ("attested_by",)          # separately signed
 DERIVED_RELS = ("fulfills", "accepted")            # derived from the ledger
-SET_VALUED = (("links",), ("tags",), ("provenance", "inputs"))
+SET_VALUED = (("links",), ("tags",))
 
 def publisher_view(m):
     v = copy.deepcopy(m)
@@ -188,7 +189,7 @@ def publisher_view(m):
     if isinstance(v.get("links"), list):
         v["links"] = [l for l in v["links"]
                       if not (isinstance(l, dict) and l.get("rel") in DERIVED_RELS)]
-    v = prune_empty(v)
+    v = prune_empty(v, preserve_members_of=(("verification", "params"),))
     for path in SET_VALUED:
         sort_and_dedupe(v, path, key=canonical)    # in place, if present and a list
     return {"rc": VIEW_VERSION, "manifest": v}
@@ -216,20 +217,25 @@ def view_digest(m):
 
 ### 4.2 Absent, empty and ordered
 
-- **Absent ≡ empty.** `prune_empty` removes, recursively and bottom-up, every object member
-  whose value is `null`, `""`, `[]` or `{}`. List elements are never removed. The code already
-  treats these as equal: `description: ""` and `tags: []` are what `publish` writes for
-  "none", and `check_attestation` reads a missing and an empty `criteria` the same way. Without
-  this rule, a tool that writes `tags: []` and one that omits it would produce different
-  digests for the same claim.
+- **Absent ≡ empty only where empty has no effect.** `prune_empty` removes, recursively and
+  bottom-up, object members whose value is `null`, `""`, `[]` or `{}`, except that it does
+  **not** remove members of `verification.params`; `preserve_members_of` makes that object
+  opaque to pruning. It may remove the `params` object itself when it has no members; absent
+  params and `{}` both mean no parameters. A present parameter with value `""` must remain:
+  `verify` passes it to the comparator, and it can change the result. List elements are never
+  removed. Elsewhere, `description: ""` and `tags: []` are what `publish` writes for "none";
+  a missing and an empty `criteria` are read alike. The test vectors must cover the
+  exception as well as those safe equivalences.
 - **Set-valued lists** are sorted by the canonical JSON of each element and deduplicated:
   - `links`: the relation graph has no order, and `merge_manifest_annotations` already treats
     links as a set.
   - `tags`
-  - `provenance.inputs`: the workflow maps inputs by name, not by position.
-- **All other lists keep their order.** Examples are `rubric` (criterion order is how
-  `judgement_vector_key` orders a vector) and anything inside `generation`. If you're not sure
-  a list is a set, keep its order: treating a list as ordered can only cause a spurious
+- **All other lists keep their order.** This includes `provenance.inputs`: the verifier builds
+  an id-to-hash map by walking that list, so if an id appears twice with different hashes,
+  the last occurrence wins. Sorting or deduplicating could hide a change in the input the
+  verifier uses. Other examples are `rubric` (criterion order is how
+  `judgement_vector_key` orders a vector) and anything inside `generation`. If you're not
+  sure a list is a set, keep its order: treating a list as ordered can only cause a spurious
   mismatch, while treating it as a set can let a real change through unnoticed.
 
 ### 4.3 Versioning
@@ -304,20 +310,26 @@ event in the signer's hash-chained log.
 
 Readers apply these rules:
 
-- **Ledger-only checks.** An entry with a valid `sig2` is a **v2 entry**. All of its fields are
-  the signer's word.
+- **Ledger-only checks.** An entry with valid `sig` and `sig2` recovering the same signer is
+  a **v2 entry**. All of its fields are the signer's word.
 - **Entries with only `sig`.** These are **v1 entries**, and only their `SIGNED_FIELDS` are the
   signer's word. Every other field is an unsigned hint, which is how the code should already
   have treated it (G1). Legacy rules may still use v1 hints (§13); v2 rules never do.
 - **Failure.** A `sig2` that is present and fails is a forgery, whatever `sig` says, and is
   reported BAD SIGNATURE. Stripping `sig2` from an existing line is a rewrite. `hub check`
   catches that through its append-only rule, and `pull` must apply the same rule (phase 0).
-- **Duplicate signatures.** A `sig` value may back exactly one line across all logs. The first
-  occurrence in log order counts; later duplicates are ignored by readers and are a problem in
-  `hub check` and `pull`. viem's secp256k1 signing is deterministic (RFC 6979), so two honest
-  entries with an identical v1 payload (the same action, agent, id, hash and second) carry
-  the same `sig`. Dropping the duplicate loses no signed content. This rule closes G1's replay
-  for v1 and v2 entries alike.
+- **Replay identity.** Verify each signature and recover its signer before comparing entries;
+  `sig` text is not an identity. Equivalent recovery-byte encodings can verify as the same
+  signer while having different strings. For a v1-only entry, the identity is
+  `(recovered signer, canonical(signing_payload(e)))`. Reject a later v1-only line with an
+  identity already seen in any log, including on a v2 entry; changing unsigned fields or
+  `prev` cannot make it new. For a v2 entry, the identity is
+  `(recovered sig2 signer, canonical({"rc": "ledger/2", "entry": E}))`, the **complete signed
+  payload** defined above. Reject a repeated v2 identity. A distinct v2 payload remains a
+  distinct event even if its v1 `SIGNED_FIELDS` and `sig` match (for example, two `accept`
+  events with different signed `result` values in the same second). Readers ignore rejected
+  replays; `hub check` and `pull` report them as problems. The first authenticated identity
+  in ledger order is the one readers may use.
 
 Cost: one extra signature per event. `sign-message.mjs` gains a mode that signs both messages
 in one Node process, so a publish still spawns one signer.
@@ -388,11 +400,23 @@ The event requirement blocks rollback: an older view, validly signed, cannot be 
 because its event is already at the base and isn't new. The view binding closes the
 ride-along: an edit after the republish changes the digest.
 
+**Repeated pull of the locally held view.** A second branch may carry the same authorised
+republish that was already pulled through a first branch. After checking blob integrity,
+ledger append-only history, signatures, view state and local trust, `pull` compares the
+incoming publisher view and statement with the **local held manifest**, not only the merge
+base. If they are the same authenticated view already accepted locally, it does not require
+another new view event. Other incoming changes, including separately signed fields and
+derived caches, still go through their own checks. A different view must satisfy every
+new-view condition above. `hub check --base` applies the same principle when the checked
+tree already holds that authenticated view.
+
 **Rotation and transfer.** A view may carry `"authority": ["0x…", …]`. That list is a publisher
 claim, so the view signs it. To hand over, the current key signs a view that names the new key.
-The new key then signs the next view, and it may drop the old key. A lost key has no in-band
-recovery, by design: if a peer could re-key someone else's artifact, it could take any artifact
-over. The recovery path is adoption under local trust (§6.2). Collections keep their existing
+The new key then signs the next view, and it may drop the old key. A separate optional
+`"reproducers": ["0x…", …]` delegates only the ability to back a rebaseline stamp (§7.2);
+it never grants permission to sign a new publisher view. A lost key has no in-band recovery,
+by design: if a peer could re-key someone else's artifact, it could take any artifact over.
+The recovery path is adoption under local trust (§6.2). Collections keep their existing
 recovery path, the spec's maintainers list.
 
 **#42's rule.** It is kept only for legacy manifests and tightened in phase 0 (§13). It is
@@ -458,9 +482,16 @@ ledger.
 
 A `rebaseline` with `result=match` stops writing `provenance.run.exec` and `.rebaselined` into
 the manifest. Today it rewrites the publisher's exec record. The v2 `rebaseline` event signs
-`result`, `exec_mode` and `image_digest`, and `recorded_exec(m)` reports "recorded: X;
-reproduced under Y by K (rebaseline)". The publisher's own record stays as published. A
-publisher who wants the new record as *their* claim republishes.
+`result`, `exec_mode` and `image_digest`. A `match` event may back the derived reproduction
+stamp only when its recovered signer has standing: the signer is in the held view's `A(id)` or
+is a reproducer explicitly delegated by that signed view. `hub check` can verify that
+standing from the held view. `pull` additionally requires the signer to be registered,
+inside its valid key window and trusted for this artifact type; `trust=none` fails. For a
+sandbox claim, the authenticated event must contain the exact image digest displayed. A
+v1-only event's unsigned `result`, `exec_mode` and `image_digest` cannot establish the stamp.
+`recorded_exec(m)` may then report "recorded: X; reproduced under Y by K (rebaseline)".
+The publisher's own record stays as published. A publisher who wants the new record as
+*their* claim republishes.
 
 ### 7.3 `ingest` leaves the manifest
 
@@ -478,13 +509,20 @@ is excluded from every digest (as #42 already excludes it) and ignored on incomi
  "criteria": "<string>", "params": {<normalised verification.params>}, "observed": "<RFC 3339>"}
 ```
 
-- `params` is `prune_empty(verification.params)`, so an absent value and `{}` both appear as
-  `{}`. The key is always present, which means an attestation over "no params" is a positive
-  statement.
+- `params` is the parsed `verification.params` map without pruning its members, or `{}` when
+  absent. Thus absent params and `{}` both appear as `{}`, while `{"CHECK_COLUMNS": ""}`
+  remains distinct. The key is always present, so an attestation over "no params" is a
+  positive statement.
 - `check_attestation` returns `stale` when either `criteria` or `params` differs from the
   manifest, as it already does for `criteria`.
 - `publish --force` already refuses to change `--criteria` under an attestation. It refuses a
   changed `--param` the same way.
+- An attestation authenticates the attester's observation, not a change to publisher-owned
+  `verification.criteria` or `params`. Those changes still need an authorised new publisher
+  view (§6). `pull` also requires the attester's peer registration, valid key window and trust
+  for the artifact type before using the attestation as backing; `trust=none` cannot back an
+  annotation. `hub check` checks the signature and publisher authority without local trust
+  settings.
 
 **Why not bind the publisher view digest instead?** An attestation is about an observation,
 not about the title or licence. If its statement named the view digest, any editorial
@@ -577,15 +615,29 @@ cross-checks run only where the blob is held, as they do today.
 
 **Phase 0: fixes that need no format change.** Land with #42 or right after it.
 
-1. **Duplicate-signature rejection (G1).** `pull`, `hub check` and the ledger readers
-   (`task_events`, `ManifestEditGate._events`) honour only the first line that carries a given
-   `sig`.
+1. **Authenticated replay rejection (G1).** `pull`, `hub check` and the ledger readers
+   (`task_events`, `ManifestEditGate._events`) use the recovered signer and v1 signed payload
+   as the identity of a v1-only entry (§5.2), including when an equivalent signature encoding
+   is supplied. A later v1-only replay is rejected across logs. Phase 1 adds the complete
+   signed-payload identity for v2 entries; matching v1 fields alone do not collapse distinct
+   v2 events.
 2. **Authority (G2).** `republish` never grants authority. Authority is the first verified
    `publish` signer (`first_publisher_index`, restricted to `publish`) plus collection
    maintainers. `hub check --base` reports a `publish` event in the range for an id that the
    base already holds from a different key.
 3. **`pull` enforces append-only ledgers.** Today only `hub check --base` checks that the base
    version of each log is a prefix. The replay defence assumes it.
+4. **Legacy rebaseline gate.** A v1 `rebaseline` match cannot make an unregistered key an
+   authorised metadata editor. For legacy manifests, require signer standing from the held
+   publisher/maintainer authority before accepting an execution-record edit; `pull` also
+   checks peer registration, key validity and trust scope. The claimed exec mode and image
+   digest must match authenticated evidence. Since v1 does not sign those fields, a v1
+   rebaseline alone cannot authenticate a changed execution record; use a fresh authorised
+   republish or defer the stamp to v2.
+5. **Repeated pull.** If incoming publisher fields already equal the locally accepted
+   manifest, allow the second branch through after the usual blob, ledger, signature,
+   authority and trust checks. For viewed manifests, apply the authenticated-view rule in
+   §6. Equality with an altered or unauthorised local copy is insufficient.
 
 **Phase 1: reader (tool 0.3.0).**
 
@@ -631,9 +683,9 @@ republish. Where a hub enforces views, editing a manifest requires adopting it f
 | #42 rule | Result |
 |---|---|
 | Authorised republish in range | **Replaced** for viewed manifests by §6 (view bound to event, authority from the held view). **Kept** for legacy manifests, with phase 0's tightened authority. |
-| `fulfills` ← `submit`, `accepted` ← beneficiary `accept` | **Replaced** by derived links computed from v2 events (§7.1). **Kept** for legacy caches, after duplicate rejection. |
-| `attested_by` ← valid attestation + `attest` event | **Kept**, applied to the separately signed class regardless of view state. Statements gain v2 (§8). |
-| `exec`/`rebaselined` ← `rebaseline` match | **Replaced** by event-only rebaseline stamps (§7.2). **Kept** for legacy manifests. |
+| `fulfills` ← `submit`, `accepted` ← beneficiary `accept` | **Replaced** by derived links computed from v2 events (§7.1). **Kept** for legacy caches, after authenticated replay rejection. |
+| `attested_by` ← valid attestation + `attest` event | **Kept**, applied to the separately signed class regardless of view state. Statements gain v2 and pull checks attester trust (§8). An attestation does not authorise changed publisher fields. |
+| `exec`/`rebaselined` ← `rebaseline` match | **Replaced** by event-only rebaseline stamps (§7.2). Legacy manifest edits require the phase-0 standing and trust checks; unsigned v1 lifecycle fields alone never back a changed exec record. |
 | Links may only be added; removal needs a republish | **Subsumed** for viewed manifests: any change to publisher links changes the digest. **Kept** for legacy. |
 | `ingest` ignored | **Kept**, and in phase 2 the field leaves the manifest. |
 | Ride-along gap (test §6) | **Closed** for viewed manifests. The pinned test flips to "refused" in phase 2. It stays open for legacy manifests until they are adopted, or permanently on hubs that never enforce. |
@@ -679,11 +731,14 @@ It is attested under v2 (`params` is in the statement). The tamper sets `params`
 
 **(c) G1, the accept replay.**
 
-- In phase 0, C's copy of L's `accept` line carries a `sig` already used by the original line.
-  It is a duplicate, so the gates refuse it and readers ignore it. The `accepted` link loses
-  its backing and is refused.
+- In phase 0, C's copy of L's `accept` line has the same recovered signer and v1 signed
+  payload as the original, even if C changes the signature's recovery-byte encoding. It is a
+  replay, so the gates refuse it and readers ignore it. The `accepted` link loses its backing
+  and is refused.
 - From phase 2, if C instead edits `result` on a v2 line, `sig2` fails: BAD SIGNATURE. If C
-  strips `sig2`, the line is a v1-only duplicate of a v2 original, refused as above.
+  strips `sig2`, the line is a v1-only replay of a v2 original, refused as above. Two
+  legitimately signed v2 `accept` events with different `result` values are distinct because
+  their complete v2 payloads differ, even if their v1 signatures match.
 
 **(d) G2, authority laundering.** Step 1 (a `republish` line with the manifest reverted) gives
 C nothing: authority comes from the held view's signer (L), and in phase 0 from `publish`
@@ -717,15 +772,16 @@ key"). Under views it would grant nothing anyway.
 These are separate PRs, in this order:
 
 1. **Phase 0** on top of #42:
-   - duplicate-signature rejection, tightened authority, `pull` append-only
-   - tests for G1 and G2 (the two repros in §2.2) and an updated
-     `tests/test-manifest-edit.sh`
+   - authenticated v1 replay rejection, tightened authority, `pull` append-only
+   - tests for G1 and G2 (the two repros in §2.2), alternate recovery-byte encodings, an
+     unregistered rebaseline with a missing signed image digest, and a second locally equal
+     pull; update `tests/test-manifest-edit.sh`
 2. **Phase 1:**
    - `publisher_view`, `view_digest`, view states, `sig2` and attestation v2 verification
    - `tests/test-manifest-view.sh` with **fixed test vectors**: a manifest, its view, its
      digest, and the statement and signature from a fixed test key. Cover empty vs absent, set
-     ordering, non-ASCII, floats, an unknown field (default-include) and an unknown view
-     version.
+     ordering, duplicate-id `provenance.inputs` order, an empty comparator parameter,
+     non-ASCII, floats, an unknown field (default-include) and an unknown view version.
 3. **Phase 2:**
    - the writers, `manifest sign`, derived links, `ingest.json`
    - flip the ride-along test in `tests/test-manifest-edit.sh` §6 to "refused"
