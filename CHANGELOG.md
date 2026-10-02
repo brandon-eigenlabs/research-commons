@@ -28,6 +28,20 @@ manifest/ledger format version — `commons --version` prints both).
   `collection show` marks the list unattributable until that address signs (#24).
 
 ### Fixed
+- **`pull` merged an edit to the manifest of an already-held artifact without validation
+  (safety fix, #41).** If the content hash was unchanged, the manifest was counted as "already
+  present", no check ran, and `git merge` applied the edit, so a peer could rewrite tier,
+  criteria, licence, obtainability, title or links. `hub check --base` did not look at modified
+  manifests at all. Both gates now compare a modified manifest with the merge base. They accept
+  it if the range carries a verified signed `publish`/`republish` of the id by a key with
+  authority over it (a verified publisher at the base, or a collection maintainer). `pull` also
+  requires a registered peer with sufficient trust and a valid key window. Otherwise they accept
+  only additive annotations backed by a signed ledger event (`submit` → `fulfills`,
+  beneficiary's `accept` → `accepted`, `attest` → `attested_by`, matching `rebaseline` → exec
+  record). Everything else is rejected and quarantined. Known gap, pinned by the test suite:
+  the republish signature does not cover manifest bytes, so an edit committed after a genuine
+  republish in the same range rides on it. **Behaviour change:** a hub PR or peer branch that
+  hand-edits manifests now fails. Use `publish --force` instead.
 - **Ingest policy bypass reopened by stripping a manifest `supersedes` link (#39).** Before the
   spec-declared lineage above, the #11 walk followed the successor's manifest link, which no
   signature covers. Anyone holding the manifest could delete it (a manifest-only edit, or

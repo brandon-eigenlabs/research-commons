@@ -505,6 +505,22 @@ with bad), id collisions against different local content, attester registration 
 trust, and **executable artifacts gated on the publisher's trust** from their signed
 ledger entry. Rejects go to `registry/quarantine.log` and the fetch is left unmerged.
 
+**An edit to a manifest you already hold is checked too (#41).** Manifests are not covered
+by any signature (a publish signs the content hash), so a peer can change an artifact's
+tier, criteria, licence, obtainability, title or links without changing its id. `pull` and
+`hub check --base` compare every modified manifest with the merge base and accept the edit
+only if the incoming range carries a verified signed `publish`/`republish` of that id (what
+`publish --force` emits) by a key with authority over it: a verified publisher of the
+artifact at the base or, for a collection, a maintainer its spec names. `pull` also
+requires that key to be a registered peer whose trust covers the type. Without a republish,
+the only edits allowed are annotations a signed ledger event backs: a `fulfills` link (a
+`submit` of this result), an `accepted` link (the beneficiary's `accept`), an attestation
+(a valid `attested_by` plus its `attest` event), and a rebaseline exec record. These may only
+add, never remove. Anything else is rejected and quarantined. **Known gap:** a republish
+signs the content hash, not the manifest bytes, so an edit committed after a genuine
+republish in the same range is accepted with it. Closing that needs the manifest itself
+under the signature (planned together with #10).
+
 **A peer can never hand you local policy.** `registry/peers.json`,
 `registry/exec-policy.json`, `registry/subscriptions.json`, and `quarantine.log` are
 local-only and never replicated; an incoming tree carrying one is refused outright.
