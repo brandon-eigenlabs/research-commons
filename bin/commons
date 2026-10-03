@@ -220,6 +220,8 @@ VERIFY_BATCH_JS = os.path.join(LIB, "verify-batch.mjs")
 # Fields covered by a ledger signature. Order is irrelevant (canonical JSON sorts
 # keys); the SET is what matters, and it must never silently change meaning.
 SIGNED_FIELDS = ("action", "agent", "id", "sha256", "ts")
+REBASELINE_SIGNED_FIELDS = SIGNED_FIELDS + (
+    "sig_v", "tier", "result", "exec_mode", "image_digest", "superseded_by")
 TRUST_LEVELS = ("full", "datasets-only", "none")
 
 
@@ -461,7 +463,10 @@ def canonical(obj):
 
 def signing_payload(entry):
     """The subset of a ledger entry that a signature covers."""
-    return {k: entry[k] for k in SIGNED_FIELDS if k in entry}
+    fields = (REBASELINE_SIGNED_FIELDS
+              if entry.get("action") == "rebaseline" and entry.get("sig_v") == 2
+              else SIGNED_FIELDS)
+    return {k: entry[k] for k in fields if k in entry}
 
 
 def signing_key_path():
@@ -520,6 +525,17 @@ def verify_entry(entry, sig, addr):
     res = (bool(out.get("valid")), out.get("recovered"))
     _VERIFY_CACHE[ck] = res
     return res
+
+
+def authenticated_event_identity(entry):
+    """Identity of a verified event, ignoring unsigned fields and sig encoding."""
+    sig = entry.get("sig")
+    if not isinstance(sig, str) or not sig:
+        return None
+    ok, recovered = verify_entry(entry, sig, entry.get("addr"))
+    if not ok or not isinstance(recovered, str) or not recovered:
+        return None
+    return recovered.lower(), canonical(signing_payload(entry))
 
 
 # ---------------- peer registry ----------------
@@ -595,11 +611,48 @@ def ledger_prepare(entry):
     signed field, so chaining at commit time does not invalidate the signature.
     """
     entry.setdefault("schema", SCHEMA)
+    if entry.get("action") == "rebaseline":
+        entry["sig_v"] = 2
     entry["ts"] = now()
     addr, sig = sign_entry(entry)
+    if addr and _same_signed_event_held(entry, addr):
+        # `ts` has one-second resolution and only action/agent/id/sha256/ts are signed,
+        # so two genuine events in one second (accept R1, then accept R2 --force) would
+        # share an authenticated identity: readers would fold them into one and the
+        # replay gates would refuse the second. Move to the next second instead.
+        time.sleep(max(0.0, 1.0 - (time.time() % 1.0)) + 0.01)
+        entry["ts"] = now()
+        addr, sig = sign_entry(entry)
     entry["addr"] = addr
     entry["sig"] = sig
     return entry
+
+
+def _same_signed_event_held(entry, addr):
+    """Does the signer's own log already hold an event with this signed payload?"""
+    path = my_ledger_path(addr)
+    if not os.path.exists(path):
+        return False
+    payload = canonical(signing_payload(entry))
+    try:
+        with open(path) as f:
+            lines = f.readlines()
+    except OSError:
+        return False
+    for line in reversed(lines):
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(e, dict):
+            continue
+        if e.get("ts") != entry["ts"]:
+            if (e.get("ts") or "") < entry["ts"]:
+                break
+            continue
+        if canonical(signing_payload(e)) == payload:
+            return True
+    return False
 
 
 def ledger_append(entry):
@@ -3379,7 +3432,7 @@ def check_attestation(m):
     att = v.get("attested_by")
     if not att: return "none", "no attester recorded"
     stmt = att.get("statement") or {}
-    if stmt.get("sha256") != m["content"]["sha256"]:
+    if stmt.get("sha256") != (m.get("content") or {}).get("sha256"):
         return "stale", "attestation covers different content than the manifest"
     # The attester signed a specific criteria string. If the manifest now says something
     # else, the signature is orphaned: it vouches for a claim no longer on display.
@@ -3765,7 +3818,7 @@ def first_publisher_index():
     if _FIRSTPUB_CACHE["key"] == key:
         return _FIRSTPUB_CACHE["map"]
 
-    cands = {}
+    cands, seen = {}, set()
     for e, _path, _idx, lsha in lines:
         if e.get("action") not in ("publish", "republish"): continue
         if not e.get("sig"): continue
@@ -3773,6 +3826,9 @@ def first_publisher_index():
         if not aid: continue
         ok, _rec = verify_entry(e, e["sig"], e.get("addr"))
         if not ok: continue
+        identity = authenticated_event_identity(e)
+        if identity in seen: continue
+        seen.add(identity)
         b_ts, b_q = bounds.get(lsha, (UNANCHORED, "none"))
         cands.setdefault(aid, []).append({
             "addr": (e.get("addr") or "").lower(),
@@ -6450,6 +6506,412 @@ def trust_allows(peer, m):
     return m.get("type") not in METHOD_TYPES  # datasets-only
 
 
+# ---------------- edits to an already-held manifest (issue #41) ----------------
+# A manifest is outside every signature (SIGNED_FIELDS covers the content hash, not the
+# manifest), and an edit that leaves the content alone leaves the id and hash alone too.
+# Before #41, `pull` treated such an edit as "already present" and `hub check --base`
+# never compared a MODIFIED manifest with its base, so a peer could rewrite the tier,
+# criteria, licence, obtainability, title or links of an artifact you hold and every gate
+# passed. This is the gate both of them now run on every modified manifest.
+#
+# An edit is accepted in one of two ways:
+#   1. The range carries a NEW verified signed publish/republish of the id (what
+#      `publish --force` emits) by a key with authority over the artifact: a verified
+#      publisher of it at the base, or, for a collection, a maintainer its spec names.
+#      In `pull`, that key must also be a registered peer whose trust covers the type and
+#      whose validity window covers the entry.
+#   2. Every changed field is an annotation that a signed ledger event in the tree backs:
+#        links + {"rel":"fulfills","id":T}   a `submit` of this result for task T
+#        links + {"rel":"accepted","id":R}   an `accept` of R for this task, by its
+#                                            beneficiary when the spec names one
+#        verification.attested_by            a valid attestation and a matching signed
+#                                            `attest` event by the same address
+#        provenance.run.exec / .rebaselined   an owner-signed v2 `rebaseline`
+#                                            with result=match and matching exec record
+#      Links may only be ADDED this way; removing or rewriting one needs a republish.
+#
+# `ingest` is a local arrival stamp and is ignored on both sides.
+#
+# KNOWN GAP, by construction: a republish signs {action, agent, id, sha256, ts} and the
+# sha256 is the CONTENT hash, so it authorises "an edit by this key", not particular
+# manifest bytes. An edit committed after a genuine republish in the same range rides on
+# it. Closing that needs the manifest itself under the signature (the follow-up to #41,
+# designed together with #10); this gate's rules become the legacy path for manifests
+# published before that change.
+MANIFEST_LOCAL_FIELDS = ("ingest",)
+
+
+def _read_bytes(path):
+    try:
+        with open(path, "rb") as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+def _ledger_raw_lines_at(ref):
+    """Every ledger line (raw text) committed at `ref`, in file order."""
+    r = git("ls-tree", "-r", "--name-only", ref, "--", "registry/ledger/",
+            "registry/ledger.jsonl", check=False)
+    out = []
+    if r.returncode != 0:
+        return out
+    for rel in r.stdout.split():
+        if not rel.endswith(".jsonl"):
+            continue
+        show = git("show", "%s:%s" % (ref, rel), check=False)
+        if show.returncode == 0:
+            out += [l for l in show.stdout.splitlines() if l.strip()]
+    return out
+
+
+def _ledger_raw_lines_local():
+    out = []
+    for path in ledger_files():
+        with open(path) as f:
+            out += [l.rstrip("\n") for l in f if l.strip()]
+    return out
+
+
+def replayed_ledger_events(base_lines, head_lines):
+    """New occurrences of an already authenticated event in a ledger range.
+
+    A copy is a replay when its authenticated identity (recovered signer + signed
+    payload) is already known but its bytes are not: someone changed an unsigned
+    field (`prev`, `result`, `task`, the signature encoding). A byte-identical
+    duplicate carries nothing new and is tolerated (a legacy flat ledger holding the
+    same line as a per-peer log); the readers collapse it.
+    """
+    def entries(lines):
+        parsed = []
+        for line in lines:
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(event, dict) and event.get("sig"):
+                parsed.append(event)
+        return parsed
+
+    base, head = entries(base_lines), entries(head_lines)
+    prime_verify_cache(base + head)
+    known = {}
+    for event in base:
+        identity = authenticated_event_identity(event)
+        if identity is not None:
+            known.setdefault(identity, set()).add(canonical(event))
+    replayed = []
+    for event in head:
+        identity = authenticated_event_identity(event)
+        if identity is None:
+            continue
+        held = known.get(identity)
+        if held is None:
+            known[identity] = {canonical(event)}   # a new event: its first bytes stand
+        elif canonical(event) not in held:
+            # Same signer and signed payload, different bytes. Genuine events never
+            # share an identity (ledger_prepare keeps them apart), so this is a copy
+            # whatever the order or file it arrived in.
+            replayed.append("%s %s" % (event.get("action"), event.get("id")))
+    return replayed
+
+
+class ManifestEditGate:
+    """Decides whether an edit to an already-held manifest may land (issue #41).
+
+    base_lines   ledger lines at the point the edit starts from (merge base, or what is
+                 held locally when there is none): who has authority, and what is not new
+    head_lines   ledger lines on the incoming side
+    blob(d)      raw bytes of a blob, or None (task and collection specs)
+    peers        the local peer registry for `pull`; None for `hub check`, which has no
+                 trust policy (it is local-only) and so checks signatures alone
+    """
+
+    def __init__(self, base_lines, head_lines, blob, peers=None, trust=None):
+        self.blob = blob
+        self.peers = peers
+        self.trust = trust
+        self.base = self._parse(base_lines)
+        head = self._parse(head_lines)
+        prime_verify_cache([e for e in self.base + head if e.get("sig")])
+        base_ids = {identity for e in self.base
+                    if (identity := self._identity(e)) is not None}
+        self.new = [e for e in head if self._identity(e) not in base_ids]
+        seen, everything = set(), []
+        for l in list(base_lines) + list(head_lines):
+            if l not in seen:
+                seen.add(l); everything.append(l)
+        self.all = self._parse(everything)
+        prime_verify_cache([e for e in self.all if e.get("sig")])
+
+    @staticmethod
+    def _parse(lines):
+        out = []
+        for l in lines:
+            try:
+                e = json.loads(l)
+            except ValueError:
+                continue
+            if isinstance(e, dict):
+                out.append(e)
+        return out
+
+    @staticmethod
+    def _signer(e):
+        """Lower-cased recovered address of a verified signed entry, or None."""
+        sig = e.get("sig")
+        if not isinstance(sig, str) or not sig:
+            return None
+        ok, rec = verify_entry(e, sig, e.get("addr"))
+        if not ok:
+            return None
+        return ((rec if isinstance(rec, str) and rec else e.get("addr")) or "").lower() or None
+
+    @classmethod
+    def _identity(cls, e):
+        """The signer and bytes actually authenticated, independent of sig encoding."""
+        return authenticated_event_identity(e)
+
+    def _events(self, pool, action, **match):
+        for e in pool:
+            if e.get("action") != action:
+                continue
+            if any(e.get(k) != v for k, v in match.items()):
+                continue
+            who = self._signer(e)
+            if who:
+                yield e, who
+
+    def _spec(self, m):
+        raw = self.blob(_manifest_digest(m))
+        if raw is None:
+            return None
+        try:
+            spec = json.loads(raw)
+        except ValueError:
+            return None
+        return spec if isinstance(spec, dict) else None
+
+    def _authority(self, aid, m):
+        """Addresses whose republish may rewrite aid's manifest."""
+        publishers = {s for _e, s in self._events(self.base, "publish", id=aid)}
+        # A republish-only push cannot turn its signer into an owner. Multiple
+        # publishers of the same content id are ambiguous without an anchored order;
+        # fail closed rather than let a later, backdated publish grant authority.
+        who = publishers if len(publishers) == 1 else set()
+        if m.get("type") == "collection":
+            who |= _spec_maintainers(self._spec(m))
+        return who
+
+    def _foreign_publish(self, aid, who, m):
+        """Is a new `publish` of held artifact aid by `who` one that must be refused?
+
+        Only when it would MINT authority: the base holds no verified signed publish of
+        aid, so landing this one would make its signer the sole owner. When the artifact
+        already has a signed publisher, a second key's publish (a backdated forgery, or
+        an honest concurrent publish of the same bytes) cannot gain authority: owners
+        become ambiguous and _authority fails closed. That case is reported, not
+        refused, because refusing would wedge federation with the peer for good (its
+        log is append-only), and priority between the two is the anchors' call.
+        """
+        if who in self._authority(aid, m):
+            return False
+        return not any(True for _ in self._events(self.base, "publish", id=aid))
+
+    def _republish_ok(self, aid, m, digest):
+        """(authorised?, note about unauthorised republishes in the range)."""
+        authority = self._authority(aid, m)
+        refused = []
+        for act in ("publish", "republish"):
+            for e, who in self._events(self.new, act, id=aid):
+                if e.get("sha256") != digest:
+                    continue
+                if who not in authority:
+                    refused.append("%s (no authority over %s)" % (who, aid)); continue
+                if self.peers is not None:
+                    peer = find_peer(who, self.peers)
+                    if peer is None:
+                        refused.append("%s (not a registered peer)" % who); continue
+                    if self.trust and not self.trust(peer, m):
+                        refused.append("%s (trust=%s does not cover %s)"
+                                       % (who, peer.get("trust"), m.get("type"))); continue
+                    if parse_ts(e.get("ts")) is None:
+                        refused.append("%s (missing event timestamp)" % who); continue
+                    okw, why = key_valid_at(peer, e.get("ts"))
+                    if not okw:
+                        refused.append("%s (%s)" % (who, why)); continue
+                return True, ""
+        return False, ("; a signed republish in the range does not authorise it: %s"
+                       % ", ".join(sorted(set(refused))) if refused else "")
+
+    def _link_backed(self, aid, m, link):
+        if not isinstance(link, dict):
+            return False
+        rel, target = link.get("rel"), link.get("id")
+        if not isinstance(target, str) or not target:
+            return False
+        digest = _manifest_digest(m)
+        # Match on SIGNED fields. A submit signs id (= the task) and sha256 (= the
+        # result's content hash); task/result are unsigned and a relayed copy of a
+        # genuine event can carry any value there.
+        if rel == "fulfills":
+            return bool(digest) and any(True for _ in self._events(
+                self.all, "submit", id=target, sha256=digest, task=target, result=aid))
+        if rel == "accepted":
+            if m.get("type") != "task":
+                return False
+            spec = self._spec(m)
+            if spec is None:
+                return False
+            ben = (((spec.get("beneficiary") or {}) if isinstance(spec, dict) else {})
+                   .get("addr") or "")
+            ben = ben.lower() if isinstance(ben, str) else ""
+            # An accept signs id (= the task) and sha256 (= the task's content hash),
+            # not `result`: which result was accepted is unauthenticated until the
+            # signed-statement follow-up (#43). Known gap, pinned by the test suite.
+            return bool(digest) and any(not ben or who == ben for _e, who in self._events(
+                self.all, "accept", id=aid, sha256=digest, task=aid, result=target))
+        return False
+
+    def _attestation_backed(self, aid, old, new, digest):
+        att = (new.get("verification") or {}).get("attested_by") or {}
+        if not isinstance(att, dict):
+            return False
+        stmt = att.get("statement") or {}
+        if not isinstance(stmt, dict) or stmt.get("attests") != aid:
+            return False
+        state, _detail = check_attestation(new)
+        allowed = ("valid",) if self.peers is not None else ("valid", "unknown-signer")
+        if state not in allowed:
+            return False
+        addr = (att.get("addr") or "").lower()
+        old_verification = old.get("verification")
+        previous = (old_verification.get("attested_by") or {}) \
+            if isinstance(old_verification, dict) else {}
+        previous_addr = (previous.get("addr") or "").lower() \
+            if isinstance(previous, dict) else ""
+        if previous_addr and addr != previous_addr and \
+                addr not in self._authority(aid, old):
+            return False
+        if self.peers is not None:
+            peer = find_peer(addr, self.peers)
+            if peer is None or not self.trust or not self.trust(peer, new):
+                return False
+        for e, who in self._events(self.all, "attest", id=aid, sha256=digest):
+            if who != addr:
+                continue
+            if parse_ts(e.get("ts")) is None:
+                continue
+            if self.peers is not None and not key_valid_at(
+                    find_peer(who, self.peers), e.get("ts"))[0]:
+                continue
+            return True
+        return False
+
+    def _rebaseline_backed(self, aid, old, new, digest):
+        run = ((new.get("provenance") or {}).get("run") or {})
+        ex = run.get("exec") if isinstance(run, dict) else None
+        if not isinstance(ex, dict):
+            return False
+        authority = self._authority(aid, old)
+        for e, who in self._events(self.all, "rebaseline", id=aid, sha256=digest,
+                                   result="match"):
+            if who not in authority or e.get("sig_v") != 2:
+                continue
+            if parse_ts(e.get("ts")) is None:
+                continue
+            if self.peers is not None:
+                peer = find_peer(who, self.peers)
+                if peer is None or not self.trust or not self.trust(peer, new):
+                    continue
+                if not key_valid_at(peer, e.get("ts"))[0]:
+                    continue
+            if e.get("exec_mode") != ex.get("mode"):
+                continue
+            if e.get("image_digest") != ex.get("image_digest"):
+                continue
+            return True
+        return False
+
+    def problems(self, aid, old, new, removals_matter=True,
+                 merge_annotations=False):
+        """Reasons the edit old -> new may not land ([] = it may)."""
+        if not isinstance(old, dict) or not isinstance(new, dict):
+            return ["manifest is not a JSON object"]
+        o = {k: v for k, v in old.items() if k not in MANIFEST_LOCAL_FIELDS}
+        n = {k: v for k, v in new.items() if k not in MANIFEST_LOCAL_FIELDS}
+        if canonical(o) == canonical(n):
+            return []
+        digest = _manifest_digest(new)
+        ok, note = self._republish_ok(aid, old, digest)
+        if ok:
+            return []
+        bad = []
+        for k in sorted(set(o) | set(n)):
+            ov, nv = o.get(k), n.get(k)
+            if canonical(ov) == canonical(nv):
+                continue
+            if merge_annotations and k == "tags" and \
+                    isinstance(ov or [], list) and isinstance(nv or [], list):
+                continue
+            if k == "links" and isinstance(nv, list) and isinstance(ov or [], list):
+                old_keys = {canonical(x) for x in (ov or [])}
+                new_keys = {canonical(x) for x in nv}
+                if removals_matter:
+                    for x in (ov or []):
+                        if canonical(x) not in new_keys:
+                            bad.append("link %s:%s removed" % (
+                                (x or {}).get("rel") if isinstance(x, dict) else "?",
+                                (x or {}).get("id") if isinstance(x, dict) else x))
+                for x in nv:
+                    if canonical(x) in old_keys or self._link_backed(aid, new, x):
+                        continue
+                    bad.append("link %s:%s added with no signed ledger event behind it" % (
+                        x.get("rel") if isinstance(x, dict) else "?",
+                        x.get("id") if isinstance(x, dict) else x))
+                continue
+            if k == "verification" and isinstance(ov, dict) and isinstance(nv, dict):
+                diff = {kk for kk in set(ov) | set(nv)
+                        if canonical(ov.get(kk)) != canonical(nv.get(kk))}
+                att_changed = "attested_by" in diff
+                backed = att_changed and self._attestation_backed(aid, old, new, digest)
+                if att_changed and not backed:
+                    bad.append("verification.attested_by changed without a valid "
+                               "attestation and a matching signed attest event")
+                if "criteria" in diff:
+                    # check_attestation (inside _attestation_backed) already requires
+                    # the signed statement to cover the new criteria; what remains is
+                    # whose claim it is to restate.
+                    att = nv.get("attested_by") if isinstance(nv.get("attested_by"), dict) else {}
+                    signer = (att.get("addr") or "").lower() if isinstance(att.get("addr"), str) else ""
+                    if not (backed and signer in self._authority(aid, old)):
+                        bad.append("verification.criteria changed")
+                for kk in sorted(diff - {"attested_by", "criteria"}):
+                    bad.append("verification.%s changed" % kk)
+                continue
+            if k == "provenance" and isinstance(ov, dict) and isinstance(nv, dict):
+                ro = dict((ov.get("run") or {})) if isinstance(ov.get("run"), dict) else ov.get("run")
+                rn = dict((nv.get("run") or {})) if isinstance(nv.get("run"), dict) else nv.get("run")
+                rest_o = {kk: vv for kk, vv in ov.items() if kk != "run"}
+                rest_n = {kk: vv for kk, vv in nv.items() if kk != "run"}
+                if canonical(rest_o) != canonical(rest_n):
+                    bad.append("provenance changed")
+                    continue
+                if isinstance(ro, dict) and isinstance(rn, dict):
+                    run_diff = {kk for kk in set(ro) | set(rn)
+                                if canonical(ro.get(kk)) != canonical(rn.get(kk))}
+                    if run_diff <= {"exec", "rebaselined"} and \
+                            self._rebaseline_backed(aid, old, new, digest):
+                        continue
+                bad.append("provenance.run changed with no matching signed rebaseline")
+                continue
+            bad.append("%s changed" % k)
+        if not bad:
+            return []
+        return ["manifest of already-held %s edited without an authorised signed "
+                "republish: %s%s" % (aid, ", ".join(bad), note)]
+
+
 # Subscription is local pinning intent, never registry content. It deliberately does
 # not scope pull: manifests still pass through the full ingest gate, and later sync
 # stages use this file only to decide which already-accepted blobs to materialize.
@@ -7171,17 +7633,62 @@ def hub_check(a):
         top_changed = [p for p in diff if p in allowed_top]
         if top_changed:
             print("  note: hub metadata changed (maintainer review): %s" % ", ".join(top_changed))
-        changed_ledgers = [p for p in diff if p.startswith("registry/ledger/")
-                           and p.endswith(".jsonl")]
+        changed_ledgers = [p for p in diff if p == "registry/ledger.jsonl" or
+                           (p.startswith("registry/ledger/") and p.endswith(".jsonl"))]
         deleted = git("diff", "--name-only", "--no-renames", "--diff-filter=D",
                       "%s...HEAD" % a.base).stdout.split()
         for p in deleted:
-            if p.startswith(("registry/artifacts/", "registry/ledger/", "store/")):
+            if p.startswith(("registry/artifacts/", "registry/ledger/", "store/")) or \
+                    p == "registry/ledger.jsonl":
                 problems.append("registry content deleted: %s (append-only)" % p)
+        # Issue #41: a MODIFIED manifest is a claim about an artifact the hub already
+        # holds. It needs an authorised signed republish in this range, or ledger events
+        # behind each added annotation. Signatures only: a hub's trust policy is
+        # local-only, so CI cannot apply one (the lead's `pull` does).
+        modified = [p for p in git("diff", "--name-only", "--no-renames", "--diff-filter=M",
+                                   "%s...HEAD" % a.base, "--", "registry/artifacts/"
+                                   ).stdout.split() if p.endswith(".json")]
+        mb = git("merge-base", a.base, "HEAD", check=False)
+        mb = mb.stdout.strip() if mb.returncode == 0 else a.base
+        if modified:
+            print("check: edits to already-held manifests (%d)" % len(modified))
+            gate = ManifestEditGate(
+                _ledger_raw_lines_at(mb), _ledger_raw_lines_at("HEAD"),
+                lambda dg: _git_blob_at("HEAD", dg) or _git_blob_at(mb, dg))
+            for p in modified:
+                old_m, new_m = _git_json_at(mb, p), _git_json_at("HEAD", p)
+                if not isinstance(new_m, dict):
+                    problems.append("unparseable manifest %s" % p); continue
+                if not isinstance(old_m, dict):
+                    continue    # not held at the merge base: added, checked as such
+                problems += gate.problems(new_m.get("id") or os.path.basename(p)[:-5],
+                                          old_m, new_m)
+        if changed_ledgers:
+            if not modified:
+                gate = ManifestEditGate(
+                    _ledger_raw_lines_at(mb), _ledger_raw_lines_at("HEAD"),
+                    lambda dg: _git_blob_at("HEAD", dg) or _git_blob_at(mb, dg))
+            for e, who in gate._events(gate.new, "publish"):
+                aid = e.get("id")
+                if not isinstance(aid, str):
+                    continue
+                old_m = _git_json_at(mb, "registry/artifacts/%s.json" % aid)
+                if not isinstance(old_m, dict) or who in gate._authority(aid, old_m):
+                    continue
+                if gate._foreign_publish(aid, who, old_m):
+                    problems.append("publish by %s does not authorise already-held %s "
+                                    "(it has no signed publisher; this would make %s "
+                                    "its owner)" % (who, aid, who))
+                else:
+                    print("  note: publish of already-held %s by %s grants no "
+                          "authority (it already has a signed publisher)" % (aid, who))
+        for description in replayed_ledger_events(
+                _ledger_raw_lines_at(mb), _ledger_raw_lines_at("HEAD")):
+            problems.append("replayed signed ledger event: %s" % description)
         # Ledgers are append-only: the base version must be a prefix of HEAD's.
         for p in changed_ledgers:
             old = git("show", "%s:%s" % (a.base, p), check=False)
-            if old.returncode == 0:
+            if old.returncode == 0 and os.path.exists(os.path.join(ROOT, p)):
                 with open(os.path.join(ROOT, p)) as f: new = f.read()
                 if not new.startswith(old.stdout):
                     problems.append("ledger rewritten, not appended: %s" % p)
@@ -7197,6 +7704,8 @@ def hub_check(a):
         prefix = TYPES.get(m.get("type"), "")
         if fn[:-5] != m.get("id") or (prefix and m.get("id") != "%s-%s" % (prefix, d[:8])):
             problems.append("%s: id does not derive from its content hash / filename" % fn)
+        if not d:
+            continue    # reported above: the id cannot derive from a missing hash
         p = blob_read_path(d)
         if os.path.exists(p) and sha256_file(p) != d:
             problems.append("%s: blob does not match its hash" % m.get("id"))
@@ -7461,6 +7970,81 @@ def cmd_pull(a):
         publisher_addrs = incoming_publishers(
             os.path.join(worktree, "registry", "ledger"))
         accepted, rejected, unchanged = [], [], 0
+        # Issue #41: an edit to a manifest we already hold goes through its own gate.
+        # Compared against the MERGE BASE, not our copy: that is the change git will
+        # apply, and our own later annotations are not the peer's to "remove". With no
+        # merge base (independently bootstrapped peer) the two copies can only union
+        # their annotations at merge (merge_manifest_annotations), so additions are
+        # what counts. Our ledgers are append-only descendants of the merge base, so
+        # they are the "already held" side for deciding which ledger events are new.
+        mbase = git("merge-base", "HEAD", ref, check=False)
+        mbase = mbase.stdout.strip() if mbase.returncode == 0 else None
+        if mbase:
+            held_lines = _ledger_raw_lines_at(mbase)
+            held_manifest = lambda aid: _git_json_at(
+                mbase, "registry/artifacts/%s.json" % aid)
+            paths = git("ls-tree", "-r", "--name-only", mbase, "--", "registry/ledger/",
+                        "registry/ledger.jsonl").stdout.splitlines()
+            for rel in paths:
+                if not rel.endswith(".jsonl"):
+                    continue
+                before = subprocess.run(["git", "show", "%s:%s" % (mbase, rel)],
+                                        cwd=ROOT, capture_output=True, timeout=600)
+                after = _read_bytes(os.path.join(worktree, rel))
+                if before.returncode != 0 or after is None or \
+                        not after.startswith(before.stdout):
+                    quarantine("ledger-rewritten", {"path": rel, "remote": remote})
+                    sys.exit("error: refusing to merge — ledger rewritten, not "
+                             "appended: %s" % rel)
+        else:
+            # Unrelated histories (a peer bootstrapped with `git init`): there is no
+            # common base to hold the incoming ledger to, so what WE hold stands in for
+            # it. The replay and publish checks below must still run: skipping them let
+            # an altered copy of an event we already hold back a forged annotation.
+            held_lines = _ledger_raw_lines_local()
+            held_manifest = lambda aid: load_manifest(aid, missing_ok=True)
+        # An incoming ref we already contain adds no ledger line: skip the signature
+        # passes below (a no-op pull used to batch-verify the whole ledger).
+        contained = git("merge-base", "--is-ancestor", ref, "HEAD",
+                        check=False).returncode == 0
+        replayed = [] if contained else replayed_ledger_events(
+            held_lines, _ledger_raw_lines_at(ref))
+        if replayed:
+            quarantine("ledger-replayed", {"events": replayed, "remote": remote})
+            sys.exit("error: refusing to merge — replayed signed ledger "
+                     "event(s): %s" % ", ".join(replayed))
+        pub_gate = None if contained else ManifestEditGate(
+            held_lines, _ledger_raw_lines_at(ref),
+            lambda dg: (_read_bytes(blob_read_path_at(inc_store, dg))
+                        or _read_bytes(blob_read_path(dg))),
+            peers=peers, trust=trust_allows)
+        foreign = []
+        for e, who in ([] if contained else pub_gate._events(pub_gate.new, "publish")):
+            aid = e.get("id")
+            if not isinstance(aid, str):
+                continue
+            old_m = held_manifest(aid)
+            if not isinstance(old_m, dict):
+                continue
+            if who in pub_gate._authority(aid, old_m):
+                peer = find_peer(who, peers)
+                if peer is not None and trust_allows(peer, old_m) and \
+                        parse_ts(e.get("ts")) is not None and \
+                        key_valid_at(peer, e.get("ts"))[0]:
+                    continue
+                foreign.append("%s by %s" % (aid, who))
+            elif pub_gate._foreign_publish(aid, who, old_m):
+                foreign.append("%s by %s (it has no signed publisher; this would make "
+                               "the signer its owner)" % (aid, who))
+            else:
+                print("note: publish of already-held %s by %s grants no authority "
+                      "(it already has a signed publisher)" % (aid, who))
+        if foreign:
+            quarantine("foreign-publish", {"events": foreign, "remote": remote})
+            sys.exit("error: refusing to merge — publish does not authorise "
+                     "already-held artifact(s): %s" % ", ".join(foreign))
+        edit_gate = None
+        edits_seen = 0
         for fn in sorted(os.listdir(inc_art)):
             if not fn.endswith(".json"): continue
             try:
@@ -7480,8 +8064,35 @@ def cmd_pull(a):
                 if os.path.exists(inc) and sha256_file(inc) != d:
                     rejected.append((aid, ["incoming blob for an already-held artifact "
                                            "does not match its hash"]))
+                    continue
+                rel = "registry/artifacts/%s" % fn
+                strip = lambda d: canonical({k: v for k, v in d.items()
+                                             if k not in MANIFEST_LOCAL_FIELDS}
+                                            if isinstance(d, dict) else d)
+                if strip(local) == strip(m):
+                    unchanged += 1
+                    continue
+                prior = _git_json_at(mbase, rel) if mbase else None
+                merge_annotations = prior is None
+                if prior is None:
+                    prior = local   # added on both sides since the merge base
+                if strip(prior) == strip(m):
+                    unchanged += 1
+                    continue
+                if edit_gate is None:
+                    edit_gate = ManifestEditGate(
+                        _ledger_raw_lines_local(), _ledger_raw_lines_at(ref),
+                        lambda dg: (_read_bytes(blob_read_path_at(inc_store, dg))
+                                    or _read_bytes(blob_read_path(dg))),
+                        peers=peers, trust=trust_allows)
+                reasons = edit_gate.problems(
+                    aid, prior, m, removals_matter=bool(mbase) and
+                    not merge_annotations, merge_annotations=merge_annotations)
+                if reasons:
+                    rejected.append((aid, reasons))
                 else:
                     unchanged += 1
+                    edits_seen += 1
                 continue
             reasons = validate_incoming(m, inc_store, peers, require_sig, trust_allows,
                                         publisher_addrs)
@@ -7490,6 +8101,9 @@ def cmd_pull(a):
 
         print("incoming: %d new/changed, %d already present, %d rejected"
               % (len(accepted), unchanged, len(rejected)))
+        if edits_seen:
+            print("  (%d already-held manifest(s) carry edits backed by a signed republish "
+                  "or ledger event)" % edits_seen)
         for aid, reasons in rejected:
             print("  REJECT %s" % aid)
             for why in reasons: print("    - %s" % why)
@@ -8791,18 +9405,37 @@ def read_ledger_entries():
                 for p in paths if os.path.exists(p))
     if _LEDGER_CACHE["key"] == key:
         return _LEDGER_CACHE["rows"]
-    out = []
+    raw_entries = []
     for path in ledger_files():
         for line in open(path).read().splitlines():
             if not line.strip(): continue
             try:
-                out.append((json.loads(line), path))
+                entry = json.loads(line)
             except ValueError:
                 pass
+            else:
+                raw_entries.append((entry, path))
+    prime_verify_cache([e for e, _ in raw_entries if e.get("sig")])
+    # One row per authenticated event. Copies differ only in unsigned fields, so
+    # keep the one in the signer's OWN log (where ledger_commit writes it): a relayed
+    # copy in another file, whose unsigned task/result may have been altered, must
+    # not displace the original just because its filename sorts first.
+    out, seen = [], {}
+    for entry, path in raw_entries:
+        identity = authenticated_event_identity(entry)
+        if identity is not None:
+            own = os.path.basename(path)[:-6].lower() == identity[0]
+            if identity in seen:
+                i, kept_own = seen[identity]
+                if own and not kept_own:
+                    out[i] = (entry, path)
+                    seen[identity] = (i, True)
+                continue
+            seen[identity] = (len(out), own)
+        out.append((entry, path))
     out.sort(key=lambda t: t[0].get("ts", ""))
     _LEDGER_CACHE["key"] = key
     _LEDGER_CACHE["rows"] = out
-    prime_verify_cache([e for e, _ in out])
     return out
 
 
