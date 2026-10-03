@@ -17,10 +17,13 @@
 #   6. a second branch carrying the same authorised republish still pulls cleanly
 #   7. replaying an old publish, including an equivalent signature encoding, cannot
 #      authorise an edit; trust=none attestations and unbacked rebaselines are refused
-#   8. independent local and incoming annotations union on an add/add manifest;
-#      an unreadable task spec never grants a foreign accept authority
+#   8. independent local and incoming annotations union on an add/add manifest,
+#      but an incoming unbacked link is still refused; an unreadable task spec
+#      never grants a foreign accept authority
 #   9. a foreign publish-only event and a rewritten incoming ledger are refused
-#  10. KNOWN GAP, pinned so it is not mistaken for coverage: an edit committed after a
+#  10. a copied accept with a changed unsigned result, and a republish-only
+#      authority-laundering sequence, cannot authorise manifest edits
+#  11. KNOWN GAP, pinned so it is not mistaken for coverage: an edit committed after a
 #      genuine republish in the same range rides on it (closed by signing manifests,
 #      the follow-up designed with #10)
 set -uo pipefail
@@ -118,6 +121,28 @@ for path in (root / "registry/ledger").glob("*.jsonl"):
         f.write(json.dumps(event, sort_keys=True) + "\n")
     raise SystemExit(0)
 raise SystemExit("original signed publish not found")
+PY
+}
+replay_accept() {  # copy a valid accept, alter its unsigned result, append to its log
+  COMMONS_ROOT="$HC" python3 - "$COMMONS" "$HC" "$TK" "$DS" "$T3" <<'PY'
+import hashlib, json, pathlib, runpy, sys
+commons, root, task, original, replacement = sys.argv[1:]
+verify = runpy.run_path(commons)["verify_entry"]
+for path in (pathlib.Path(root) / "registry/ledger").glob("*.jsonl"):
+    lines = path.read_text().splitlines()
+    old = next((e for line in lines
+                if (e := json.loads(line)).get("action") == "accept"
+                and e.get("id") == task and e.get("result") == original), None)
+    if old is None:
+        continue
+    event = dict(old, result=replacement,
+                 prev=hashlib.sha256(lines[-1].encode()).hexdigest())
+    if not verify(event, event["sig"], event["addr"])[0]:
+        raise SystemExit("altered-result accept no longer verifies")
+    with path.open("a") as f:
+        f.write(json.dumps(event, sort_keys=True) + "\n")
+    raise SystemExit(0)
+raise SystemExit("original signed accept not found")
 PY
 }
 append_foreign_publish() {  # a fresh signed event, with no manifest change
@@ -331,6 +356,31 @@ check "pull refuses the foreign publish-only event" \
 check "  pull names the authority failure" \
   "$(both | grep -c "publish does not authorise already-held artifact(s): $DS by $(echo "$ADDR_C" | tr 'A-Z' 'a-z')")" "1"
 
+# ---------------------------------------------------------------- 3a2. republish-only authority laundering
+head_ "3a2. a republish-only push does not grant its signer authority"
+branch republish-only
+check "contributor signs a republish of the lead's dataset" \
+  "$(rc C publish dataset "$W/r.csv" "temporary contributor title" --force)" "0"
+( cd "$HC" && git restore --source origin/main -- "registry/artifacts/$DS.json" )
+cpush republish-only
+check "first push leaves the manifest unchanged" \
+  "$(git -C "$HC" diff --name-only origin/main HEAD -- "registry/artifacts/$DS.json" | wc -l | tr -d ' ')" "0"
+check "lead accepts the event-only push" "$(lpull republish-only)" "0"
+check "lead still holds the original title" "$(field "$HL" "$DS" 'm["title"]')" "readings"
+( cd "$HC" && git checkout -q -B republish-laundered )
+check "contributor tries to rewrite title, tier and licence" \
+  "$(rc C publish dataset "$W/r.csv" "laundered title" --force \
+    --tier T0 --criteria x --license MIT)" "0"
+cpush republish-laundered
+check "hub check --base rejects the laundered edit" "$(hcheck)" "1"
+check "pull rejects the laundered edit" "$(lpull republish-laundered --dry-run)" "1"
+check "  contributor has no authority over the dataset" \
+  "$(both | grep -c "no authority over $DS")" "1"
+check "  lead's title remains unchanged" "$(field "$HL" "$DS" 'm["title"]')" "readings"
+check "  lead's tier remains T3" "$(field "$HL" "$DS" 'm["verification"]["tier"]')" "T3"
+check "  lead's licence remains CC0-1.0" "$(field "$HL" "$DS" 'm["license"]')" "CC0-1.0"
+lreset "$BASE"
+
 # ---------------------------------------------------------------- 3b. replayed owner publish
 head_ "3b. an old signed publish does not authorise a forged edit"
 for variant in plain equivalent; do
@@ -394,6 +444,43 @@ PY
 )"
 lreset "$BASE"
 
+# ---------------------------------------------------------------- 3e. add/add tags and unbacked incoming links
+head_ "3e. add/add accepts local tags but rejects an incoming unbacked link"
+for variant in tags unbacked-link; do
+  branch "add-add-$variant"
+  printf 'independent %s\n' "$variant" > "$W/add-add-$variant.csv"
+  ADD_ID=$(LC publish dataset "$W/add-add-$variant.csv" "shared $variant result" \
+    --tier T3 --criteria "hand-transcribed" --license CC0-1.0 \
+    --obtainability open 2>/dev/null | tail -1)
+  check "$variant fixture publishes a shared artifact" \
+    "$(echo "$ADD_ID" | grep -cE '^ds-[0-9a-f]{8}$')" "1"
+  ADD_DIGEST=$(field "$HC" "$ADD_ID" 'm["content"]["sha256"]')
+  mkdir -p "$HL/store/sha256/${ADD_DIGEST:0:2}"
+  cp "$HC/registry/artifacts/$ADD_ID.json" "$HL/registry/artifacts/$ADD_ID.json"
+  cp "$HC/store/sha256/${ADD_DIGEST:0:2}/$ADD_DIGEST" \
+     "$HL/store/sha256/${ADD_DIGEST:0:2}/$ADD_DIGEST"
+  if [ "$variant" = tags ]; then
+    cpush add-add-tags
+    edit "$HL" "$ADD_ID" 'm["tags"] = ["local-tag"]'
+    ( cd "$HL" && git add registry store && git commit -qm "local tags on add-add artifact" )
+    check "pull accepts a local tags change on an add/add manifest" \
+      "$(lpull add-add-tags)" "0"
+    check "  merged manifest retains the local tag" \
+      "$(field "$HL" "$ADD_ID" 'm["tags"]')" "['local-tag']"
+  else
+    edit "$HC" "$ADD_ID" 'm["links"].append({"rel": "fulfills", "id": "'"$TK2"'"})'
+    cpush add-add-unbacked-link
+    ( cd "$HL" && git add registry store && git commit -qm "local copy of add-add artifact" )
+    check "pull refuses an unbacked incoming link on an add/add manifest" \
+      "$(lpull add-add-unbacked-link --dry-run)" "1"
+    check "  rejection names the missing signed event" \
+      "$(both | grep -c "link fulfills:$TK2 added with no signed ledger event behind it")" "1"
+    check "  local manifest remains free of the unbacked link" \
+      "$(field "$HL" "$ADD_ID" 'm["links"]')" "[]"
+  fi
+  lreset "$BASE"
+done
+
 # ---------------------------------------------------------------- 4. legitimate annotations
 head_ "4. submit / accept / attest annotations still flow"
 branch exchange
@@ -421,6 +508,23 @@ check "lead pulls it" "$(lpull attest)" "0"
 check "  attested_by landed" "$(field "$HL" "$T3" 'm["verification"]["attested_by"]["addr"].lower()')" \
   "$(echo "$ADDR_C" | tr 'A-Z' 'a-z')"
 lreset "$BASE2"
+
+# ---------------------------------------------------------------- 4a. replayed lifecycle authorization
+head_ "4a. changing an unsigned result on a copied accept cannot add an accepted link"
+branch replay-accept
+check "copied accept still carries a valid owner signature" \
+  "$(rc replay_accept)" "0"
+edit "$HC" "$TK" 'm["links"].append({"rel": "accepted", "id": "'"$T3"'"})'
+cpush replay-accept
+check "hub check --base rejects the altered accept" "$(hcheck)" "1"
+check "  hub check identifies the replayed accept" \
+  "$(grep -c "replayed signed ledger event: accept $TK" "$W/out.txt")" "1"
+check "pull rejects the altered accept" "$(lpull replay-accept --dry-run)" "1"
+check "  pull identifies the replayed accept" \
+  "$(both | grep -c "replayed signed ledger event(s): accept $TK")" "1"
+check "  lead retains only the genuine accepted result" \
+  "$(field "$HL" "$TK" 'sorted(l["id"] for l in m["links"] if l["rel"] == "accepted")')" \
+  "['$DS']"
 
 # ---------------------------------------------------------------- 4b. explicit trust denial
 head_ "4b. a trust=none attester cannot change a held claim"
