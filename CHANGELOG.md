@@ -9,6 +9,36 @@ manifest/ledger format version — `commons --version` prints both).
 
 ## [Unreleased]
 
+### Changed
+- **Anchor coverage is per signer, so every key must anchor its own log.** A checkpoint
+  now bounds only the log of the key that signed its `anchor` event. A hub operator's
+  `anchor` run no longer protects contributors' lines: a key that never runs `anchor`
+  has uncheckpointed publishes, which sort last in every priority comparison.
+- **A later publisher who anchored now outranks an earlier one who didn't.** With every
+  bound local (self-declared), ordering is checkpoint first, asserted time only as a
+  tiebreak. Derivation credit follows that ordering, so the uncheckpointed earlier
+  publisher's submission can drop from *independent derivation* to *concurring
+  reference*, and `status` reports a TIME DISCREPANCY against it.
+- **Existing `confirmed` checkpoints lose Bitcoin quality, with no grandfathering.**
+  They still count as local checkpoints when a matching signed `anchor` event exists
+  in the signer's own log; otherwise they contribute nothing to priority. Bitcoin
+  quality returns only with receiver-local proof and block-time verification.
+
+### Fixed
+- **Untrusted anchor JSON no longer grants Bitcoin-quality priority.** A fabricated
+  `confirmed` checkpoint could seize first-publisher credit and report a discrepancy
+  against the honest publisher, without a proof. Read-side bounds now require a
+  recomputed root and a matching signed `anchor` event in the signer's own log, cover
+  only that log's preceding prefix, and use the signed event's timestamp. All current
+  checkpoints stay local (self-declared), regardless of confirmation metadata;
+  Bitcoin quality awaits receiver-local proof/block-time verification. Evidence quality
+  sorts before time across publishers as well as within a line's bounds. Unsigned
+  operational checkpoints remain usable for unsigned-log drift coverage, but cannot
+  authenticate signed events or unsigned lines that claim an `addr`. A signed anchor
+  event dated before a line it covers is ignored. `status` and derivation-evidence
+  text now describe a TIME DISCREPANCY as a disagreement between assertions, not
+  grounds to discount a peer. `pull`/`hub check` acceptance rules are unchanged.
+
 ### Added
 - **`announce` warns when a remote would leak local or internal details (#53).** A local
   filesystem path, a private/loopback/CGNAT or single-label host, an internal name
