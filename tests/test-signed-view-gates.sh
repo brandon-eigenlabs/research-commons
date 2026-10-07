@@ -457,7 +457,7 @@ class SignedViewGateTests(unittest.TestCase):
         self.assertIn("UNSIGNED METADATA (legacy): no publisher signature",
                       self.cli(self.source, "show", self.aid, expected=0).stdout)
 
-    def test_legacy_browse_does_not_start_ledger_signature_verifier(self):
+    def test_legacy_browse_only_verifies_search_annotation_index(self):
         self.git(self.source, "reset", "--hard", self.legacy_ref)
         wrappers = self.case / "wrappers"
         wrappers.mkdir()
@@ -474,12 +474,18 @@ class SignedViewGateTests(unittest.TestCase):
                    PATH=str(wrappers) + os.pathsep + self.env["PATH"])
         # All fixture events remain genuinely signed. The wrapper records only
         # which helper executes; it neither stubs nor bypasses cryptography.
+        # Phase 2 refreshes search's graph index from authenticated annotations.
+        # A warm table listing still needs no ledger signature verification.
         for command in (("list",), ("search", "Synthetic view gate report")):
+            calls.unlink(missing_ok=True)
             result = subprocess.run([sys.executable, str(COMMONS), *command],
                                     cwd=self.source, env=env, capture_output=True,
                                     text=True, timeout=30)
             self.assertEqual(result.returncode, 0, self.output(result))
-            self.assertFalse(calls.exists(), calls.read_text() if calls.exists() else "")
+            observed = calls.read_text().splitlines() if calls.exists() else []
+            expected = ([str(COMMONS.parent.parent / "lib/verify-batch.mjs")]
+                        if command[0] == "search" else [])
+            self.assertEqual(observed, expected)
 
     def test_owner_updates_view_with_new_event_and_repeated_checks(self):
         manifest = copy.deepcopy(self.viewed)

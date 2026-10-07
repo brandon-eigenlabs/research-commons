@@ -302,6 +302,20 @@ check "warns about the pre-existing unrecorded result" \
   "$(grep -c "a result matching $TKF2 already exists locally" "$W/err.txt")" "1"
 check "names the orphaned result" "$(grep -c "$RESO" "$W/err.txt")" "1"
 wrk release "$TKF2" >/dev/null 2>&1
+# The deliberately unbacked cached link has served its federation-lag probe.
+# Remove it through the publisher's signing path so final fsck sees a clean view;
+# publish --force without --link preserves existing links rather than removing them.
+COMMONS_SIGNING_KEY="$BKEY" python3 - "$COMMONS" "$RESO" "$TKF2" <<'PYCLEAN'
+import runpy, sys
+ns = runpy.run_path(sys.argv[1])
+m = ns["load_manifest"](sys.argv[2])
+m["links"] = [link for link in m.get("links", [])
+              if link != {"rel": "fulfills", "id": sys.argv[3]}]
+ns["commit_signed_publish"](m["id"], m, {
+    "agent": "freshness-fixture", "action": "republish", "id": m["id"],
+    "sha256": m["content"]["sha256"]}, True)
+PYCLEAN
+check "unbacked freshness fixture cleaned through signed republish" "$?" "0"
 
 # Control: a task with a fresh, never-superseded input and no pre-existing result
 # manifest must not warn at all — the advisory must not fire on the common case.
