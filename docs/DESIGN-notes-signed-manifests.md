@@ -1,8 +1,14 @@
 # Design note: Signed manifest views
 
-**Date:** 2026-10-02, revised 2026-10-06 · **Status:** proposal for design review (revision 2)
+**Date:** 2026-10-02, revised 2026-10-07 · **Status:** phase 1 implemented on this branch; phases 2–3 proposed
 **Covers:** #41 part 2 and #10 · **Builds on:** #42 (`ManifestEditGate`, merged in 0.3.0-alpha.1 with #44 and #50), #39, #18, #57
 **Implementation:** separate PRs, sequenced in [§12](#12-migration-plan)
+
+**Implementation status:** this branch implements phase 1 readers and gates. Writers,
+backfill, event-derived annotations and hub enforcement remain phases 2–3. A valid
+standalone signature identifies its signer; deciding whether a replacement was
+authorised requires the held/base view. Full-tree inspection cannot reconstruct a
+lost delegation history from a replacement file alone.
 
 ## Summary
 
@@ -357,9 +363,17 @@ Readers apply these rules:
   fields say whatever the relayer left in them (#45 residual). Two defences, in order:
   1. **Per-signer v2 floor.** A signer's own hash-chained log is the record of what it writes.
      Once a log contains any v2 entry, readers treat every *later* v1-only line in that log as
-     stripped, and refuse it. Position in the chain is authenticated by `prev`, which the
-     signer's later `sig2` entries cover transitively. This needs no new field and is the
-     phase 1 fix.
+     stripped, and refuse it. Only a verified v2 event in the signer's own log
+     establishes that log's floor; foreign-log and invalid events cannot do so.
+     This needs no new field and is implemented in phase 1.
+
+     **Limit:** `prev` is excluded from both signatures. The floor enforces received
+     physical order; `sig2` does not authenticate that order transitively. Append-only
+     checks preserve a receiver's held prefix, but a receiver that never held the
+     original cannot detect a rewritten prefix, a stripped first v2 event, or a
+     completely downgraded log. #45 therefore remains open for that window. Closing
+     it needs independently authenticated upgrade evidence or explicit receiver
+     enforcement, rather than a claim that the current hash chain signs its order.
   2. **Hub enforcement flag.** Phase 3's `require_signed_views` also refuses v1-only events
      from any signer known to write v2, which closes the window for logs that have never
      reached the receiver.
@@ -674,24 +688,30 @@ cross-checks run only where the blob is held, as they do today.
 
 | Item | Status |
 |---|---|
-| Authenticated replay rejection (G1), including equivalent signature encodings and unrelated histories | Done, #44 (tests 3b, 9). v2 complete-payload identity: **not done**, phase 1 (§5.2 "Status in 0.3.0"). |
+| Authenticated replay rejection (G1), including equivalent signature encodings and unrelated histories | Done, #44 (tests 3b, 9). This branch's phase 1 uses the complete v2 payload as identity. |
 | `republish` never grants authority; foreign `publish` reported or refused (G2) | Done, #44 (tests 3a, 3a1, 3a2). |
 | `pull` enforces append-only ledgers | Done, #44 (test 3c), including the legacy flat log. |
 | Legacy rebaseline gate: standing, trust, signed image digest | Done, #44 and #50 (test 7). `sig_v: 2` was replaced by `sig2` before release (#49). |
 | Repeated pull of the locally held manifest | Done, #44 (test 2). |
 | `sig2` on every event | Done, #50, pulled forward from phase 2. |
-| Lifecycle readers bind to signed fields | Done, #50 (#45 cases 1–3). Residual: stripped `sig2` on a never-held copy, #45, phase 1. |
+| Lifecycle readers bind to signed fields | Done, #50 (#45 cases 1–3). Phase 1 rejects known stripped copies regardless of received order, and v1-only entries after a verified v2 floor. Unseen-prefix/all-v1 downgrades remain possible because `prev` is unsigned (§5.2). |
 | `pull` applies `hub check`'s per-line ledger rules | Done, #50 (#48 items 1, 2). Item 3 (verification cost) is open. |
 | Authority freeze when a second key publishes | **Open**, #47. Not fixable by anchored order after #57. Routes: §6.2 adoption, or views. |
 
-**Phase 1: reader (tool 0.4.0).**
+**Phase 1: reader (planned tool 0.4.0; implemented on this branch).**
 
 - Implement `publisher_view`/`view_digest`, `publisher_sig` verification, attestation v2
   verification and the view states. (`sig2` verification exists since 0.3.0.)
 - Switch v2 entries to the complete-payload replay identity, and add the per-signer v2 floor
-  (§5.2), which closes the #45 residual.
+  (§5.2). This contains the #45 residual where the receiver has stronger evidence; it
+  does not authenticate an unseen prefix or an entirely downgraded history.
 - Show the view states in `status`/`list`/`show`/`verify`; add `fsck --views`.
-- The gates refuse `altered`, `signed-unauthorised` and `stripped`.
+- The gates refuse `altered`, `signed-unauthorised` and `stripped`, and require a
+  matching authorised v2 view event for adoption or a replacement. Unknown view
+  versions remain advisory on reads but cannot pass the ingest gates.
+- Supersession diagnostics compare received physical order within one signer's
+  history. An explicit republish can restore an earlier view. Separate delegate
+  logs establish no order between concurrent views.
 - **This phase writes nothing new.** Hubs and peers upgrade their readers before anyone
   produces the data.
 
@@ -828,7 +848,7 @@ These are separate PRs, in this order:
 
 1. **Phase 0**: done in #44 and #50 (table in §12). Still open from it: the #45 residual
    (phase 1), #47 (needs a decision; see §6.2 and §15), #48 item 3 (cost).
-2. **Phase 1:**
+2. **Phase 1: implemented on this branch, pending review and release.**
    - `publisher_view`, `view_digest`, view states, attestation v2 verification
    - v2 complete-payload replay identity and the per-signer v2 floor (§5.2)
    - `tests/test-manifest-view.sh` with **fixed test vectors**: a manifest, its view, its

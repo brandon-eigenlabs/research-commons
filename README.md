@@ -69,6 +69,8 @@ commons list --type collection           # topics in this hub
 commons collection show <cl-id>          # endorsed vs. claimed members + open work
 commons search "some phrase"             # full-text search across artifacts
 commons get <id> / cat <id> / links <id> # manifest, content, citation edges
+commons show <id>                       # manifest + metadata signature state
+commons fsck --views                    # audit signed metadata views
 commons graph <id> --depth 10            # transitive evidence tree
 
 # contribute
@@ -557,7 +559,28 @@ Lifecycle readers select a task's events by the signed `id` and ignore an event 
 you hold whose content hash is the submit's signed hash, and an accept without `sig2` only if
 its `result` names such a submission (#45).
 
-**Known gaps** (pinned by the test suite): a republish signs the content hash, not the
+**Signed-view readers (#43 phase 1).** `show`, `status`, `list`, `search` and
+`collection show` label legacy metadata and check a present `publisher_sig`.
+`list --json` adds `view_state` and `view_detail`; `fsck --views` audits signatures.
+`status --brief` stays one line and adds `view=<state>`.
+`verify` fails on altered or stripped metadata before executing a workflow.
+For viewed manifests, both gates require a valid signature by a key authorised by
+the held view and an exact matching new dual-signed `view` event. The file can prove
+who signed it; authorisation of a replacement needs the held/base copy. Concurrent
+publisher views cannot be union-merged. This phase does not write views yet:
+publication, backfill and per-hub enforcement are separate phases of the
+[signed-views design](docs/DESIGN-notes-signed-manifests.md).
+
+Distinct v2 events use their complete signed payload as their replay identity.
+A stripped copy of a known v2 event is refused, as is a v1-only line after a verified
+v2 line in that signer's own log. Invalid or foreign-log v2 lines establish no floor.
+Because `prev` is unsigned, this does not authenticate the original log order or
+detect complete downgrade of a log the receiver has never seen.
+
+Attestation v2 readers check signed `params`. A valid v1 attestation on metadata
+with parameters is `partial`; new partial attestations are refused by both gates.
+
+**Remaining legacy gaps** (pinned by the test suite): a republish signs the content hash, not the
 manifest bytes, so an edit committed after a genuine republish in the same range is
 accepted with it (#43, together with #10). A receiver that never held a `sig2`-signed
 original cannot tell a copy with `sig2` stripped from an older entry, so the rules above
