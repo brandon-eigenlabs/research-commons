@@ -760,6 +760,11 @@ def metadata_note(m):
 def check_metadata_before_verify(m):
     state, note = metadata_note(m)
     print("  " + note)
+    if state in ("unknown-view-version", "unnormalisable"):
+        print("VERIFICATION STOPPED: %s has unchecked metadata (%s); "
+              "cannot proceed with workflow or comparator verification."
+              % (m.get("id"), state))
+        sys.exit(EX_NOT_MACHINE_VERIFIABLE)
     if state in VIEW_FAILURES:
         sys.exit("FAIL: %s metadata is %s" % (m.get("id"), state))
 
@@ -3548,6 +3553,7 @@ def cmd_verify(a):
                 if sha256_file(p) == target:
                     ok, detail = True, "byte-identical (comparator not needed)"
                     break
+                check_metadata_before_verify(load_manifest(criteria))
                 good, out = run_comparator(criteria, stored, p, v.get("params"),
                                            exec_mode=att_exec["mode"])
                 if good:

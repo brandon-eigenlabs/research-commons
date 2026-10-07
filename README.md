@@ -564,6 +564,12 @@ its `result` names such a submission (#45).
 `list --json` adds `view_state` and `view_detail`; `fsck --views` audits signatures.
 `status --brief` stays one line and adds `view=<state>`.
 `verify` fails on altered or stripped metadata before executing a workflow.
+If metadata has an unknown view version or cannot be normalised, verification stops
+with exit 3 (`NOT-MACHINE-VERIFIABLE`) before resolving or running its workflow or
+comparator. The diagnostic says the metadata is unchecked; an unsupported future
+format is not labelled a forgery. The same guard applies to the workflow's metadata.
+T1 verification checks comparator metadata immediately before using the comparator;
+byte-identical output needs no comparator lookup.
 For viewed manifests, both gates require a valid signature by a key authorised by
 the held view and an exact matching new dual-signed `view` event. The file can prove
 who signed it; authorisation of a replacement needs the held/base copy. Concurrent

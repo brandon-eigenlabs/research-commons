@@ -25,6 +25,14 @@ manifest/ledger format version — `commons --version` prints both).
   quality returns only with receiver-local proof and block-time verification.
 
 ### Fixed
+- **Unchecked metadata stops verification (#43 phase 1).** `verify` exits 3
+  (`NOT-MACHINE-VERIFIABLE`) for unknown view versions or unnormalisable metadata,
+  before resolving or executing the artifact's workflow/comparator. This also applies
+  to workflow metadata and, when needed, T1 comparator metadata, so changing the
+  version or injecting NaN cannot bypass the signed-view tamper guard. Comparator
+  filename/hash edits are rejected before execution; byte-identical output still
+  needs no comparator lookup. Unsupported future formats are labelled unchecked,
+  without a forgery accusation.
 - **Signed-view readers and gates (#43 phase 1).** A present publisher statement is
   verified against the exact normalized metadata view. `pull` and `hub check` refuse
   altered or stripped views, unauthorized replacements, rollback, and changes without

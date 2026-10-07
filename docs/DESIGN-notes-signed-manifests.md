@@ -274,7 +274,9 @@ the publisher class, adding a set-valued path, or changing what counts as empty.
 Verifiers keep the v1 construction forever and pick the construction a statement names. Old
 digests therefore stay valid after the rules grow. A tool that meets a view version it doesn't
 know reports `unknown-view-version`. It never reports `altered`, so a newer manifest is never
-mislabelled as forged.
+mislabelled as forged. `verify` stops with exit 3 (`NOT-MACHINE-VERIFIABLE`) until the
+tool can check that metadata; unsupported metadata cannot drive workflow or comparator
+resolution or execution.
 
 ## 5. Signing formats
 
@@ -654,7 +656,7 @@ A manifest is in exactly one **view state**:
 | `stripped` | no statement, but the ledger has a v2 view event for the id | `METADATA SIGNATURE REMOVED` | problem | FAIL (1) | refuse |
 | `superseded` | valid and authorised, but a later view event by `A(id)` exists in the ledger | `older view (newer: <ts>)` | warning | proceeds, with a note | refuse in a range (rollback) |
 | `legacy` | no statement and no v2 history | `UNSIGNED METADATA (legacy)` | counted, not a problem | proceeds, with a note | #42 rules (§13) |
-| `unknown-view-version` / `unnormalisable` | from a newer tool, or NaN | `cannot check metadata (…)` | warning | proceeds, with a note | refuse |
+| `unknown-view-version` / `unnormalisable` | from a newer tool, or NaN | `cannot check metadata (…)` | warning | stops on unchecked metadata (3), before workflow/comparator resolution or execution | refuse |
 
 **Checks that run everywhere.** The view state, attestation state (`none`, `valid`, `partial`,
 `unknown-signer`, `stale`, `invalid`), and derived links resolved from events.
@@ -662,6 +664,15 @@ A manifest is in exactly one **view state**:
 **Why `verify` FAILs on `altered`.** The tier, criteria, params and recorded environment that
 `verify` reads come from the view. Re-running a workflow and comparing against a forged
 `provenance` would give a PASS that means nothing.
+
+**Unchecked metadata stops verification.** `unknown-view-version` and `unnormalisable`
+also cannot establish the tier, criteria, params or provenance used by `verify`.
+They stop verification with exit 3 and a clear unchecked-metadata diagnostic, without
+labelling an unsupported future format a forgery. The guard runs before resolving the
+artifact's workflow or comparator, and checks the workflow's own metadata before running
+its code. When T1 output needs comparison, the comparator's metadata is checked immediately
+before running its code; byte-identical output requires no comparator lookup. Altered and
+stripped views still FAIL with exit 1.
 
 **`hub check` (full tree).** Every manifest with a `publisher_sig` must be `signed`, and v2
 entries must verify `sig2`. With `--base`, modified and added manifests go through §6.
