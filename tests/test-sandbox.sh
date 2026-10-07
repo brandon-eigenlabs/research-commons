@@ -38,6 +38,15 @@ W="$COMMONS_ROOT/work"; mkdir -p "$W"
 
 c() { "$COMMONS" "$@"; }
 rc() { "$@" >"$W/out.txt" 2>"$W/err.txt"; echo $?; }
+export COMMONS_SIGNING_KEY="$W/publisher.key"
+python3 - "$COMMONS_SIGNING_KEY" <<'PYKEY'
+import os, secrets, sys
+with open(sys.argv[1], "w") as f:
+    f.write("0x" + secrets.token_hex(32))
+os.chmod(sys.argv[1], 0o600)
+PYKEY
+PUBLISHER=$(c peer whoami | head -1)
+c peer add "$PUBLISHER" --agent-id test-p3 --trust full >/dev/null || exit 1
 jget() { python3 -c 'import json,sys
 d=json.load(sys.stdin)
 for k in sys.argv[1].split("."):
@@ -260,23 +269,28 @@ fi
 
 head_ "rebaseline — converge, don't reverse"
 # $NATV_PRE is native-recorded and userland-insensitive: the canonical clean-converge case.
-check "rebaseline of matching artifact stamps exec" "$(rc c rebaseline "$NATV_PRE")" "0"
+cp "$COMMONS_ROOT/registry/artifacts/$NATV_PRE.json" "$W/pre-rebaseline.json"
+check "rebaseline of matching artifact records reproduction" "$(rc c rebaseline "$NATV_PRE")" "0"
 check "stamp reported as MATCH" "$(grep -c '^MATCH' "$W/out.txt")" "1"
-check "exec record now sandbox" "$(c get "$NATV_PRE" | jget provenance.run.exec.mode)" "sandbox"
-check "content id unchanged after stamp" "$(c get "$NATV_PRE" | jget id)" "$NATV_PRE"
-check "rebaseline records the image digest" \
-  "$(c get "$NATV_PRE" | jget provenance.run.exec.image_digest | grep -c '^sha256:')" "1"
-check "rebaseline stamps a timestamp" \
-  "$([ "$(c get "$NATV_PRE" | jget provenance.run.rebaselined)" != MISSING ] && echo yes)" "yes"
+check "publisher exec record stays native" "$(c get "$NATV_PRE" | jget provenance.run.exec.mode)" "native"
+check "publisher manifest stays byte-identical after reproduction" \
+  "$(cmp -s "$W/pre-rebaseline.json" "$COMMONS_ROOT/registry/artifacts/$NATV_PRE.json" && echo yes)" "yes"
+check "authenticated reproduction displays the sandbox image digest" \
+  "$(c show "$NATV_PRE" | grep -c "reproduced under sandbox @$DIG by")" "1"
+check "rebaseline event carries a signed timestamp" \
+  "$(c log -n 5 | python3 -c 'import json,sys
+events=[json.loads(line) for line in sys.stdin]
+print(any(e.get("id")==sys.argv[1] and e.get("action")=="rebaseline"
+          and e.get("result")=="match" and e.get("ts") and e.get("sig2")
+          for e in events))' "$NATV_PRE")" "True"
 check "rebaseline logged" "$(c log -n 5 | grep -c '\"rebaseline\"')" "1"
-check "second rebaseline is a no-op" "$(c rebaseline "$NATV_PRE" | grep -c 'already sandbox-baselined')" "1"
+check "second rebaseline reproduces the immutable native baseline" \
+  "$(c rebaseline "$NATV_PRE" | grep -c '^MATCH')" "1"
 check "rebaselined artifact verifies in sandbox" "$(rc c verify "$NATV_PRE" --exec sandbox)" "0"
-# Verifying it natively now runs outside the recorded environment, but the workflow is
-# userland-insensitive so the bytes still match. Reproducing despite an environment
-# difference is strictly stronger evidence, so it must PASS (with a note), not mismatch.
-check "cross-env reproduction still PASSes" "$(rc c verify "$NATV_PRE" --exec native)" "0"
-check "PASS notes the environment difference" \
-  "$(grep -c 'environment-independent' "$W/out.txt")" "1"
+# Reproduction never changes the publisher's native verification baseline.
+check "original native environment still PASSes" "$(rc c verify "$NATV_PRE" --exec native)" "0"
+check "native PASS has no environment-difference claim" \
+  "$(grep -c 'environment-independent' "$W/out.txt")" "0"
 if [ "$HOSTPY" != "$SBXPY" ]; then
   check "diverging artifact needs explicit supersede" "$(rc c rebaseline "$NATV")" "5"
   check "reports DIVERGED" "$(grep -c '^DIVERGED' "$W/out.txt")" "1"

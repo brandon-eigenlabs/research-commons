@@ -9,6 +9,7 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHONDONTWRITEBYTECODE=1 python3 - "$REPO" "$@" <<'PY'
 import copy
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -73,7 +74,7 @@ class SignedViewGateTests(unittest.TestCase):
         cls.aid = cls.publish(cls.template, "baseline synthetic report\n")
         cls.legacy = cls.read_manifest(cls.template, cls.aid)
         if "publisher_sig" in cls.legacy:
-            raise AssertionError("phase 1 fixture expects the legacy CLI writer")
+            raise AssertionError("independent fixture must be legacy")
         cls.legacy_ref = cls.commit(cls.template, "legacy signed publish")
         viewed = cls.attach_view(cls.template, cls.legacy)
         cls.append_event(cls.template, viewed)
@@ -203,7 +204,30 @@ class SignedViewGateTests(unittest.TestCase):
         matches = re.findall(r"\b(?:sy|sk|cl)-[0-9a-f]{8}\b", output.stdout)
         if not matches:
             raise AssertionError("publish returned no artifact id: " + output.stdout)
-        return matches[0]
+        aid = matches[0]
+        # These tests construct signatures/events independently. Start every new
+        # artifact as legacy even when the selected CLI is a phase 2 writer.
+        manifest = cls.read_manifest(root, aid)
+        manifest.pop("publisher_sig", None)
+        cls.write_manifest(root, manifest)
+        for path in (root / "registry/ledger").glob("*.jsonl"):
+            previous = None
+            rebuilt = []
+            for line in path.read_text().splitlines():
+                entry = json.loads(line)
+                if entry.get("id") == aid and "view" in entry:
+                    entry.pop("view")
+                    payload = {"rc": "ledger/2", "entry": {
+                        k: v for k, v in entry.items()
+                        if k not in ("addr", "sig", "sig2", "prev")}}
+                    entry["sig2"] = cls.sign(canonical(payload), key)["signature"]
+                if previous is not None:
+                    entry["prev"] = previous
+                line = json.dumps(entry, sort_keys=True)
+                rebuilt.append(line)
+                previous = hashlib.sha256(line.encode()).hexdigest()
+            path.write_text("\n".join(rebuilt) + "\n")
+        return aid
 
     @classmethod
     def commit(cls, root, message):

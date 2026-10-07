@@ -63,9 +63,9 @@ put relations; REL=$(c publish wiki "$W/relations.md" "Relations" --tier T0 \
   --link "part-of:$LEAF" --link "fulfills:$MID")
 c graph "$REL" >"$W/default-rel.txt"
 check "default graph omits non-evidence links" "$(grep -Ec "$LEAF|$MID" "$W/default-rel.txt")" "0"
-check "--rel all includes both non-evidence targets" \
-  "$(c graph "$REL" --rel all | grep 'non-evidence:' | grep -Ec "$LEAF|$MID")" "2"
-check "non-evidence links are marked" "$(c graph "$REL" --rel all | grep -c 'non-evidence:')" "2"
+check "--rel all includes the publisher link and ignores unbacked fulfills" \
+  "$(c graph "$REL" --rel all | grep 'non-evidence:' | grep -Ec "$LEAF|$MID")" "1"
+check "backed non-evidence links are marked" "$(c graph "$REL" --rel all | grep -c 'non-evidence:')" "1"
 
 head_ "brief status exit parity"
 put attested; T3=$(c publish dataset "$W/attested.md" "Attested leaf")
