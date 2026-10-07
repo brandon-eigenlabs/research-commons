@@ -81,6 +81,15 @@ manifest/ledger format version — `commons --version` prints both).
   legacy publisher or a collection maintainer in the hash-checked held spec;
   orphan, unsigned-only and ambiguous non-collection adoption is unavailable.
   Already signed current views are left unchanged. No `SCHEMA` bump.
+- **Opt-in signed-view enforcement (#43 phase 3).** Hub
+  `require_signed_views: true` and receiver `COMMONS_REQUIRE_VIEWS=1` require
+  signed views on incoming added/modified manifests. Base policy cannot be
+  disabled by the PR it checks, and `--force` cannot bypass receiver enforcement.
+  Pull refuses incoming changes to `.commons-hub`, including with `--allow-code`,
+  so a data sender cannot change security policy. New v1-only events from a
+  signer with authenticated v2 evidence anywhere in held/incoming history are
+  refused under enforcement. Completely downgraded unknown logs remain a #45
+  limitation. Enable only after pinning a tool with writers and enforcement.
 - **Metadata inspection.** `show`, `status`, `list`, `search`, collection display and
   `list --json` expose metadata view state; `fsck --views` audits it. `verify` refuses
   altered/stripped metadata before running code. Fixed normalization and EIP-191
@@ -101,9 +110,9 @@ manifest/ledger format version — `commons --version` prints both).
   The declared public-source input stays open in #7.
 
 ### Documentation
-- **Phase boundaries and remaining gaps.** Phase 3 enforcement is a separate
-  downstream branch; `require_signed_views` and `COMMONS_REQUIRE_VIEWS` are not
-  implemented here. Deployment requires a later tool pin containing both writer
+- **Phase boundaries and remaining gaps.** Writers and enforcement are separate
+  dependent changes, both included on this branch.
+  Deployment requires a tool pin containing both writer
   and enforcement commits; a writer-only SHA ignores the flag.
   Hub adopting authority for frozen/orphan legacy artifacts is
   deferred to #58. #45 remains open for whole-log `sig2` stripping from an unknown

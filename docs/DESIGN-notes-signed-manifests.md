@@ -1,13 +1,12 @@
 # Design note: Signed manifest views
 
-**Date:** 2026-10-02, revised 2026-10-07 · **Status:** phase 1 readers and phase 2 writers on this branch; phase 3 downstream
+**Date:** 2026-10-02, revised 2026-10-07 · **Status:** phases 1–3 implemented locally; separate dependent PRs
 **Covers:** #41 part 2 and #10 · **Builds on:** #42 (`ManifestEditGate`, merged in 0.3.0-alpha.1 with #44 and #50), #39, #18, #57
 **Implementation:** separate PRs, sequenced in [§12](#12-migration-plan)
 
-**Implementation status:** this branch adds phase 2 writers, backfill, event-derived
-links/reproduction notes and local arrival records to the phase 1 readers and gates.
-Phase 3 enforcement is a separate downstream branch, not implemented here.
-Frozen/orphan adoption through hub authority is deferred to #58. A valid
+**Implementation status:** this branch includes phase 1 readers, phase 2 writers,
+backfill, event-derived annotations and local arrival records, plus opt-in phase 3
+enforcement. Frozen/orphan hub adoption remains deferred to #58. A valid
 standalone signature identifies its signer; deciding whether a replacement was
 authorised requires the held/base view. Full-tree inspection cannot reconstruct a
 lost delegation history from a replacement file alone.
@@ -391,11 +390,12 @@ Readers apply these rules:
      completely downgraded log from an unknown key. #45 remains open for that window.
      Closing it needs independently authenticated upgrade evidence or explicit receiver
      enforcement, rather than a claim that the current hash chain signs its order.
-  2. **Receiver enforcement (downstream phase 3).** A hub may require views for
-     contributions. That policy does not itself prove an unknown key upgraded its
-     ledger: closing whole-log stripping needs authenticated upgrade evidence or
-     an explicit rule rejecting that downgraded history. Do not treat #45 as fully
-     closed by the received-order floor or a manifest-only enforcement flag.
+  2. **Hub enforcement flag.** Phase 3's `require_signed_views` also refuses v1-only events
+     in an incoming range from any signer with verified v2 evidence anywhere in the held
+     or incoming history, even if that evidence physically follows the v1 event. Invalid
+     signatures do not establish upgrade evidence. A completely stripped log from a key
+     without such evidence remains indistinguishable from legacy history; the flag does
+     not close that residual of #45.
 - **Status in 0.3.0.** #50 implements `sig2` exactly as above. It does **not** yet implement
   the v2 identity rule: `authenticated_event_identity()` uses the v1 payload for every entry,
   and `read_ledger_entries()` deduplicates on it. Two genuine v2 events from one key with the
@@ -816,18 +816,30 @@ specs; pinned-by-content cross-checks run where blobs are held.
   artifact is refused; `--force` cannot bypass held authority. No orphan or
   ambiguous non-collection adoption is introduced; hub adopting authority is #58.
 
-**Phase 3: enforcement, opted into per hub; separate downstream branch, not here.**
+**Phase 3: enforcement, opted into per hub; implemented here.**
 
 - `.commons-hub` gains `"require_signed_views": true`. That file is hub metadata, so the
-  change itself goes through maintainer review.
+  change itself goes through maintainer review. The value must be a JSON boolean;
+  malformed policy fails closed.
 - With the flag set, `hub check --base` refuses any modified or added manifest that would not
   be `signed` after the change. The legacy edit path is closed there, and a legacy manifest
-  must be adopted (backfilled) before anyone edits it.
-- `COMMONS_REQUIRE_VIEWS=1` does the same for `pull`, mirroring `COMMONS_REQUIRE_SIG`.
-- Before setting the flag, the hub pins an enforcement-capable tool revision in
-  `hub-check.yml` containing **both phase 2 writer and phase 3 enforcement commits**.
-  A literal writer-only phase 2 SHA ignores the flag and provides no enforcement.
-  Separate PRs may share a 0.5 release; the pinned revision must contain both.
+  must be adopted (backfilled) before anyone edits it. The flag at either the merge base or
+  the checked tree enables enforcement: a PR cannot disable its own gate. Unchanged legacy
+  manifests are grandfathered with `--base`; a full-tree check without a base checks all
+  manifests because it has no change context.
+- `COMMONS_REQUIRE_VIEWS=1` or the receiver's own hub flag does the same for `pull`,
+  mirroring `COMMONS_REQUIRE_SIG`. `--force` cannot bypass signed-view enforcement.
+- `pull` refuses incoming additions, edits or deletion of `.commons-hub`, including with
+  `--allow-code`. With shared history this checks the peer's changes from the common base,
+  so a receiver's own subsequent policy edit does not block an otherwise unchanged peer.
+  With unrelated histories the complete markers must agree. Review and apply hub metadata
+  locally; a data sender cannot change the receiver's enforcement or adoption policy (#58).
+- The hub pins a tool containing both phase-2 writers and phase-3 enforcement in
+  `hub-check.yml` before setting the flag. An older writer-only pin ignores it.
+
+This protects enforcement without introducing a hub adopting key. Frozen/unsigned-only
+adoption and lost-key recovery remain unresolved in #58; the implementation grants no
+authority to keys named by arbitrary hub metadata.
 
 **Old manifests are grandfathered indefinitely for reading**, as `legacy`. Nothing forces a
 republish. Where a hub enforces views, editing a manifest requires adopting it first.
@@ -958,7 +970,7 @@ These are separate PRs, in this order:
      local-only `ingest.json`
    - regression coverage for writer commands, immutable lifecycle manifests,
      exact attestation parameters and ride-along refusal
-4. **Phase 3: separate downstream branch, not implemented here.**
+4. **Phase 3: implemented on this downstream branch, pending review and release.**
    `require_signed_views` and `COMMONS_REQUIRE_VIEWS`, plus hub docs.
 5. **#58 adoption authority:** separate design and implementation; no general
    recovery path is added by phase 2 or implied by phase 3 enforcement.

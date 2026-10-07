@@ -608,11 +608,28 @@ Eligibility requires the sole verified legacy publisher or a collection maintain
 named in the held, hash-checked spec. Review the printed claims: backfill vouches
 for what the manifest says now. Orphan, unsigned-only and ambiguous non-collection
 artifacts have no adoption path here. Hub adopting authority is deferred to #58.
-Phase 3 enforcement (`require_signed_views`, `COMMONS_REQUIRE_VIEWS`) is a separate
-downstream branch and is not implemented here. Before enabling it, pin a later
+Phase 3 enforcement (`require_signed_views`, `COMMONS_REQUIRE_VIEWS`) is included
+in this downstream branch. Before enabling it, pin a
 tool revision in `hub-check.yml` containing both phase 2 writers and phase 3
 enforcement; a writer-only SHA ignores the flag. See the
 [signed-views design](docs/DESIGN-notes-signed-manifests.md).
+
+**Opt-in signed-view enforcement (phase 3).** After upgrading and pinning a tool
+containing both phase-2 writers and phase-3 enforcement, a hub can set
+`"require_signed_views": true` in `.commons-hub`.
+`hub check --base <ref>` requires signed views on added or changed manifests and
+grandfathers unchanged legacy manifests. A full-tree check without `--base`
+checks all manifests. The policy at the base still applies when a PR removes or
+disables it. The setting must be a JSON boolean.
+
+`pull` enforces the receiver's hub setting or `COMMONS_REQUIRE_VIEWS=1`;
+`--force` cannot bypass it. A data pull refuses incoming changes to `.commons-hub`,
+including with `--allow-code`, so the sender cannot change receiver policy.
+Review and apply hub configuration locally. Enforcement also rejects new v1-only
+events from keys with verified v2 evidence in held or incoming history; it cannot
+detect complete downgrade from a key whose upgrade was never observed.
+Hub adoption authority remains a separate design decision in #58.
+Setting the flag on a tool that predates enforcement does not activate these checks.
 
 Distinct v2 events use their complete signed payload as their replay identity.
 A stripped copy of a known v2 event is refused, as is a v1-only line after a verified

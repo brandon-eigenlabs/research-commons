@@ -8713,6 +8713,10 @@ def _forbidden_key_findings_on_bytes(raw, filename, keys):
 def hub_check(a):
     """CI/lead gate for a hub. Exit 1 on any problem; prints every problem found."""
     problems = []
+    head_requires_views, policy_problems = signed_view_policy()
+    problems += policy_problems
+    require_views = head_requires_views
+    touched_manifests = set()
     if not os.path.isfile(os.path.join(ROOT, HUB_MARKER)):
         print("note: %s has no %s marker (legacy layout) — path check still applies"
               % (ROOT, HUB_MARKER), file=sys.stderr)
@@ -8747,6 +8751,16 @@ def hub_check(a):
                                    ).stdout.split() if p.endswith(".json")]
         mb = git("merge-base", a.base, "HEAD", check=False)
         mb = mb.stdout.strip() if mb.returncode == 0 else a.base
+        base_requires_views, policy_problems = signed_view_policy(ref=mb)
+        problems += policy_problems
+        # A PR cannot disable its own gate by changing the hub marker.
+        require_views = require_views or base_requires_views
+        touched_manifests = set(git(
+            "diff", "--name-only", "--no-renames", "--diff-filter=AMT",
+            "%s...HEAD" % a.base, "--", "registry/artifacts/"
+        ).stdout.splitlines())
+        if require_views:
+            print("check: signed views on added/modified manifests (unchanged legacy grandfathered)")
         if modified:
             print("check: edits to already-held manifests (%d)" % len(modified))
             gate = ManifestEditGate(
@@ -8784,6 +8798,9 @@ def hub_check(a):
         for description in replayed_ledger_events(
                 _ledger_raw_lines_at(mb), _ledger_raw_lines_at("HEAD")):
             problems.append("replayed signed ledger event: %s" % description)
+        if require_views:
+            problems += enforced_v2_event_problems(
+                _ledger_raw_lines_at(mb), _ledger_raw_lines_at("HEAD"))
         # Ledgers are append-only: the base version must be a prefix of HEAD's.
         for p in changed_ledgers:
             old = git("show", "%s:%s" % (a.base, p), check=False)
@@ -8828,6 +8845,11 @@ def hub_check(a):
             if new_att and old_att != new_att and check_attestation(m)[0] == "partial":
                 problems.append("%s: new legacy attestation does not cover params; a params-bound attestation is required"
                                 % m.get("id"))
+        rel = "registry/artifacts/" + fn
+        if require_views and (not a.base or rel in touched_manifests) \
+                and view_state != "signed":
+            problems.append("%s: signed views required: metadata %s"
+                            % (m.get("id"), view_state))
         if view_state not in ("signed", "legacy"):
             problems.append("%s: metadata %s: %s" % (m.get("id"), view_state, view_detail))
         d = (m.get("content") or {}).get("sha256", "")
@@ -9022,6 +9044,81 @@ def incoming_non_data_paths(ref, base="HEAD"):
     return sorted(p for p in (l.strip() for l in out.splitlines()) if p and not is_data_path(p))
 
 
+def signed_view_policy(ref=None):
+    """Read enforcement from this receiver, or a reviewed hub base, never a peer."""
+    if ref is None:
+        path = os.path.join(ROOT, HUB_MARKER)
+        if not os.path.exists(path):
+            return False, []
+        try:
+            with open(path) as stream:
+                marker = json.load(stream)
+        except (OSError, ValueError):
+            return False, ["%s: cannot read signed-view policy" % HUB_MARKER]
+    else:
+        raw = git("show", "%s:%s" % (ref, HUB_MARKER), check=False)
+        if raw.returncode != 0:
+            return False, []
+        try:
+            marker = json.loads(raw.stdout)
+        except ValueError:
+            return False, ["%s at %s: cannot read signed-view policy" % (HUB_MARKER, ref)]
+    if not isinstance(marker, dict):
+        return False, ["%s: hub metadata must be a JSON object" % HUB_MARKER]
+    value = marker.get("require_signed_views", False)
+    if not isinstance(value, bool):
+        return False, ["%s: require_signed_views must be a JSON boolean" % HUB_MARKER]
+    return value, []
+
+
+def incoming_hub_policy_changed(ref):
+    """A data pull may not change the receiver's reviewed hub configuration.
+
+    Use the common base so a receiver's own later policy edit does not block a
+    peer whose marker is unchanged. With unrelated histories compare full copies;
+    silently choosing the sender's policy would create authority on this host.
+    """
+    ancestor = git("merge-base", "HEAD", ref, check=False)
+    base = ancestor.stdout.strip() if ancestor.returncode == 0 else "HEAD"
+    return bool(git("diff", "--name-only", "--no-renames", base, ref,
+                    "--", HUB_MARKER).stdout.strip())
+
+
+def enforced_v2_event_problems(base_lines, head_lines):
+    """Refuse new v1-only events from any key with authenticated v2 evidence.
+
+    Evidence may follow a downgraded event physically, or live in another held
+    log; the phase-1 floor alone cannot reject those cases. An entirely stripped
+    log from an unknown key still lacks upgrade evidence.
+    """
+    def objects(lines):
+        for line in lines:
+            try:
+                value = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(value, dict):
+                yield value
+    base, head = list(objects(base_lines)), list(objects(head_lines))
+    prime_verify_cache(base + head)
+    v2_signers = set()
+    for event in base + head:
+        if entry_is_v2(event):
+            identity = authenticated_event_identity(event)
+            if identity is not None:
+                v2_signers.add(identity[0].lower())
+    held = set(base_lines)
+    problems = []
+    for line, event in ((line, value) for line in head_lines for value in objects([line])):
+        if line in held or entry_is_v2(event):
+            continue
+        identity = authenticated_event_identity(event)
+        if identity is not None and identity[0].lower() in v2_signers:
+            problems.append("signed views required: v1-only event from known v2 signer "
+                            "%s (%s %s)" % (identity[0], event.get("action"), event.get("id")))
+    return problems
+
+
 def cmd_pull(a):
     """Ingest gate. Fetch, validate every incoming artifact, THEN merge.
 
@@ -9032,6 +9129,10 @@ def cmd_pull(a):
     if not os.path.isdir(os.path.join(ROOT, ".git")):
         sys.exit("error: %s is not a git repository" % ROOT)
     ensure_local_only_ignored()
+    local_requires_views, policy_problems = signed_view_policy()
+    if policy_problems:
+        sys.exit("error: " + "; ".join(policy_problems))
+    require_views = local_requires_views or os.environ.get("COMMONS_REQUIRE_VIEWS") == "1"
     remote = a.remote or "origin"
     r = git("remote", "get-url", remote, check=False)
     if r.returncode != 0:
@@ -9085,6 +9186,14 @@ def cmd_pull(a):
                      "       A peer cannot be allowed to supply trust policy; that "
                      "would let the\n       sender decide whom you trust. Nothing was "
                      "ingested." % ", ".join(smuggled))
+
+        if incoming_hub_policy_changed(ref):
+            quarantine("hub-policy-changed", {"path": HUB_MARKER, "remote": remote})
+            sys.exit("error: refusing to merge — incoming changes modify %s. "
+                     "Hub configuration is receiver policy; review and apply it "
+                     "locally before pulling data. Neither --force nor --allow-code "
+                     "authorises a peer policy change. Nothing was ingested."
+                     % HUB_MARKER)
 
         # Code never rides in on a data pull (2026-09-25). The artifact gate below
         # only inspects registry/ + store/; `git merge` would otherwise bring in every
@@ -9150,6 +9259,16 @@ def cmd_pull(a):
         # passes below (a no-op pull used to batch-verify the whole ledger).
         contained = git("merge-base", "--is-ancestor", ref, "HEAD",
                         check=False).returncode == 0
+        if mbase:
+            incoming_manifest_changes = set(git(
+                "diff", "--name-only", "--no-renames", "--diff-filter=AMT",
+                mbase, ref, "--", "registry/artifacts/"
+            ).stdout.splitlines())
+        else:
+            incoming_manifest_changes = set(
+                "registry/artifacts/" + fn for fn in os.listdir(inc_art)
+                if fn.endswith(".json"))
+        unsigned_views = []
         # The same per-line rules `hub check --base` applies (#48): every NEW incoming
         # signed line must verify and sit in its signer's own log. A foreign line
         # merged into our log would fail every later hub check on our pushes.
@@ -9176,6 +9295,13 @@ def cmd_pull(a):
             sys.exit("error: refusing to merge — incoming ledger line(s) fail the "
                      "ledger rules:\n%s"
                      % "\n".join("         " + p for p in misplaced[:20]))
+        if require_views and not contained:
+            downgrade_problems = enforced_v2_event_problems(
+                _ledger_raw_lines_local(), _ledger_raw_lines_at(ref))
+            if downgrade_problems:
+                quarantine("signed-views-v1-event", {"events": downgrade_problems,
+                                                    "remote": remote})
+                sys.exit("error: refusing to merge — " + "; ".join(downgrade_problems))
         pub_gate = None if contained else ManifestEditGate(
             held_lines, _ledger_raw_lines_at(ref),
             lambda dg: (_read_bytes(blob_read_path_at(inc_store, dg))
@@ -9216,9 +9342,27 @@ def cmd_pull(a):
             try:
                 with open(os.path.join(inc_art, fn)) as f: m = json.load(f)
             except ValueError:
+                if require_views and not contained \
+                        and "registry/artifacts/" + fn in incoming_manifest_changes:
+                    unsigned_views.append("%s: unparseable manifest" % fn)
                 rejected.append((fn, ["unparseable manifest"])); continue
+            if not isinstance(m, dict):
+                if require_views and not contained \
+                        and "registry/artifacts/" + fn in incoming_manifest_changes:
+                    unsigned_views.append("%s: manifest is not a JSON object" % fn)
+                rejected.append((fn, ["manifest is not a JSON object"])); continue
             aid = m.get("id") or fn[:-5]
             local = load_manifest(aid, missing_ok=True)
+            if require_views and not contained \
+                    and "registry/artifacts/" + fn in incoming_manifest_changes:
+                state, detail = manifest_view_state(m, pub_gate.head)
+                if state != "signed":
+                    unsigned_views.append("%s: metadata %s (%s)" % (aid, state, detail))
+                else:
+                    # Attribution alone is insufficient: force must not bypass
+                    # held-view authority, exact event binding or local trust.
+                    view_problems = pub_gate.view_problems(aid, local, m) or []
+                    unsigned_views.extend("%s: %s" % (aid, why) for why in view_problems)
             if local is not None and local["content"]["sha256"] == (
                     m.get("content") or {}).get("sha256"):
                 # Same manifest we already hold — but the incoming BLOB still has to be
@@ -9278,6 +9422,14 @@ def cmd_pull(a):
                     reasons.append("new legacy attestation does not cover params; a params-bound attestation is required")
             (accepted if not reasons else rejected).append(
                 (aid, reasons) if reasons else (aid, m))
+
+        if unsigned_views:
+            quarantine("signed-views-required", {"artifacts": unsigned_views,
+                                                 "remote": remote})
+            sys.exit("error: refusing to merge — signed views required for incoming "
+                     "added/modified manifests:\n%s\n"
+                     "       --force cannot bypass receiver signed-view policy."
+                     % "\n".join("         " + item for item in unsigned_views))
 
         print("incoming: %d new/changed, %d already present, %d rejected"
               % (len(accepted), unchanged, len(rejected)))
@@ -11460,10 +11612,12 @@ def main():
     s.add_argument("remote", nargs="?")
     s.add_argument("--dry-run", action="store_true", help="validate only, never merge")
     s.add_argument("--force", action="store_true",
-                   help="merge even though some artifacts were rejected (they stay quarantined)")
+                   help="merge even though some artifacts were rejected (they stay quarantined); "
+                        "does not bypass signed-view or receiver-policy enforcement")
     s.add_argument("--branch", help="remote branch to ingest (default: the current branch name)")
     s.add_argument("--allow-code", action="store_true",
-                   help="also merge changes outside registry/ and store/ (review them first)")
+                   help="also merge changes outside registry/ and store/ (review them first); "
+                        "does not authorise changes to .commons-hub receiver policy")
     s.set_defaults(fn=cmd_pull)
 
     s = sub.add_parser("hub", help="create or check a data-only hub repo")
@@ -11477,7 +11631,7 @@ def main():
     q.add_argument("--tool-ref", default="main", help="tool git ref CI checks against")
     q = hsub.add_parser("check", help="CI/lead gate: data-only changes, blobs, signatures")
     q.add_argument("--base", help="git ref to diff against (e.g. origin/main); "
-                                  "omit to skip the path check")
+                                  "omit to skip the path check and enforce views on the full tree")
     q = hsub.add_parser("where", help="print the data root in use and how it was chosen")
     s.set_defaults(fn=cmd_hub)
 
