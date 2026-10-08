@@ -317,7 +317,8 @@ Why the statement lives in the manifest (brief Option B) rather than only in the
 - It follows the attestation pattern the codebase already has.
 
 Option B alone has a hole: strip the block and the manifest looks legacy. Binding the view
-into the ledger as well (§5.2) closes it, so the proposal uses both.
+into an authenticated ledger event by an authorised key (§5.2, §6) closes it, so the
+proposal uses both. A view event from an unrelated signer is not stripping evidence.
 
 ### 5.2 Ledger entries: a second signature
 
@@ -427,9 +428,10 @@ the local copy otherwise):
 1. If the held manifest has a valid `publisher_sig`: its `addr`, plus every address in the
    held view's optional `authority` list, plus (for collections) the maintainers named in the
    spec.
-2. If the held manifest is legacy (no `publisher_sig`, and no v2 `publish`/`republish` with a
-   `view` for this id anywhere in the ledger): the **sole** verified signer of a `publish` (not
-   `republish`) event for the id, plus collection maintainers. This is #44's rule, kept as is.
+2. If the held manifest is legacy (no `publisher_sig`, and no authenticated v2
+   `publish`/`republish` with a `view` for this id by an eligible legacy key): the **sole**
+   verified signer of a `publish` (not `republish`) event for the id, plus collection
+   maintainers. This is #44's rule, kept as is.
    With two or more distinct signed publishers, the set is empty and the artifact is frozen
    until it is adopted (§6.2). This is the **adoption** case.
 
@@ -439,9 +441,23 @@ the local copy otherwise):
    not build edit authority on local first-publisher order. A signer can backdate its own
    checkpoint consistently, so an anchored tie-break would hand authority to whoever
    backdates best. Asserted `ts` is weaker still.
-3. Otherwise (the ledger has a v2 view event for this id, but the manifest carries no valid
-   statement): the manifest is `stripped`. Nobody has authority until a valid view is restored,
-   and the gates refuse it.
+3. If the manifest has no `publisher_sig`, but the ledger has an authenticated v2
+   `publish`/`republish` view event for this id by its **sole verified publish signer** or
+   (for a collection) a maintainer named in its spec: the manifest is `stripped`.
+   Nobody has authority until a valid view is restored, and the gates refuse it.
+   This remains fail-closed when an authorised signer's statement is removed.
+
+For a manifest without a statement, determine the eligible legacy keys from rule 2's
+publish-signature and collection-spec evidence **before** looking for stripping events.
+Apply the same signer filter in view-state readers and in the authority freeze check.
+An unrelated signer's authenticated v2 `republish` carrying a `view` cannot make another
+publisher's legacy artifact `stripped` or freeze that publisher's authority. It does not
+grant the unrelated signer authority either. The existing rule for multiple verified
+`publish` signers remains unchanged.
+Stripping checks also retain receiver-held evidence that an incoming history omits,
+including receiver events after a shared merge base. This extra evidence is used
+only for stripping classification; range authority, supersession and new-event
+binding keep their existing meaning.
 
 **One canonical view per id.** A second key that publishes the same bytes is recorded in the
 ledger as a publisher, so first-publisher ordering and derivation credit are unchanged. It
@@ -495,10 +511,10 @@ constraint that CI must work from signatures alone.
 ### 6.2 Adoption of legacy and unsigned-only artifacts
 
 The first view on a legacy manifest is an adoption. Under rule 2 it must be signed by the
-legacy sole publisher.
+legacy sole publisher or, for a collection, a maintainer named in its spec.
 
 - **`hub check --base`** accepts it with a `note: adopts legacy view of <id>` line for
-  maintainer review. It is the publisher's own key, so the same signature-only standard holds.
+  maintainer review. It is an eligible legacy key, so the same signature-only standard holds.
 - **`pull`** additionally applies trust policy.
 
 Phase 2 asks every publisher to backfill their own artifacts promptly (`commons manifest sign`,
@@ -653,13 +669,21 @@ A manifest is in exactly one **view state**:
 | `signed` | valid `publisher_sig`, signer in `A(id)` | `signed by 0x… (agent)` | OK | proceeds | accept, per §6 |
 | `signed-unauthorised` | valid signature, signer not in `A(id)` | `METADATA SIGNED BY 0x…, NOT THE PUBLISHER` | problem | FAIL (1) | refuse |
 | `altered` | digest mismatch or bad signature | `METADATA ALTERED — does not match 0x…'s signature`; the tier is shown struck through or marked `?` | problem | FAIL (1) | refuse |
-| `stripped` | no statement, but the ledger has a v2 view event for the id | `METADATA SIGNATURE REMOVED` | problem | FAIL (1) | refuse |
+| `stripped` | no statement, but an authenticated v2 view event for the id is signed by its sole verified publish signer or collection spec maintainer (§6) | `METADATA SIGNATURE REMOVED` | problem | FAIL (1) | refuse |
 | `superseded` | valid and authorised, but a later view event by `A(id)` exists in the ledger | `older view (newer: <ts>)` | warning | proceeds, with a note | refuse in a range (rollback) |
-| `legacy` | no statement and no v2 history | `UNSIGNED METADATA (legacy)` | counted, not a problem | proceeds, with a note | #42 rules (§13) |
+| `legacy` | no statement and no authenticated v2 view event by an eligible legacy key (§6) | browse rows: `view=legacy`; detailed readers: `UNSIGNED METADATA (legacy)` | counted, not a problem | proceeds, with a note | #42 rules (§13) |
 | `unknown-view-version` / `unnormalisable` | from a newer tool, or NaN | `cannot check metadata (…)` | warning | stops on unchecked metadata (3), before workflow/comparator resolution or execution | refuse |
 
 **Checks that run everywhere.** The view state, attestation state (`none`, `valid`, `partial`,
 `unknown-signer`, `stale`, `invalid`), and derived links resolved from events.
+
+**Browse cost and presentation.** `list`, `search`, and `collection show` use compact
+`view=legacy` markers in rows; `show`, `status`, and `fsck --views` keep detailed metadata
+notes. A cheap prefilter skips the stripping-history scan when no candidate v2
+`publish`/`republish` event carries a `view` key. When candidates exist, reuse one verified
+ledger snapshot across rows and apply §6's signer filter. Candidate presence alone proves
+nothing. These shortcuts leave signature, unknown-version and unnormalisable-view checks
+in place, and authorised stripping remains a problem.
 
 **Why `verify` FAILs on `altered`.** The tier, criteria, params and recorded environment that
 `verify` reads come from the view. Re-running a workflow and comparing against a forged

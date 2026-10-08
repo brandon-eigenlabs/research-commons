@@ -58,7 +58,7 @@ class SignedViewGateTests(unittest.TestCase):
         cls.keys = []
         cls.addresses = []
         cls.serial = 0
-        for number in (3, 4):
+        for number in (3, 4, 5):
             key = cls.lab_root / ("disposable-%d.key" % number)
             key.write_text("0x" + format(number, "064x") + "\n")
             key.chmod(0o600)
@@ -200,7 +200,7 @@ class SignedViewGateTests(unittest.TestCase):
         if kind == "synthesis":
             args += ["--tier", "T2", "--criteria", "manual test review"]
         output = cls.cli(root, *args, key=key, expected=0)
-        matches = re.findall(r"\b(?:sy|sk)-[0-9a-f]{8}\b", output.stdout)
+        matches = re.findall(r"\b(?:sy|sk|cl)-[0-9a-f]{8}\b", output.stdout)
         if not matches:
             raise AssertionError("publish returned no artifact id: " + output.stdout)
         return matches[0]
@@ -304,6 +304,158 @@ class SignedViewGateTests(unittest.TestCase):
         self.check(base=self.legacy_ref)
         self.check(base=self.legacy_ref)
         self.check(base=self.git(self.source, "rev-parse", "HEAD"))
+
+    def test_foreign_view_event_cannot_strip_legacy_or_freeze_its_owner(self):
+        self.git(self.source, "reset", "--hard", self.legacy_ref)
+        root = self.receiver()
+        # A real v2 statement in the foreign signer's own append-only log.
+        # Nothing about the held artifact or its publisher signature is changed.
+        self.append_event(self.source, self.legacy, key=1, digest="0" * 64)
+        poisoned_base = self.commit(self.source, "foreign claims a view of owner's legacy artifact")
+        self.assert_readers("legacy", "UNSIGNED METADATA (legacy)")
+        self.check(base=self.legacy_ref)
+        self.cli(self.source, "hub", "check", expected=0)
+        self.pull(expected=0, dry=True)
+        self.pull(expected=0)
+        self.assertEqual(self.read_manifest(root, self.aid), self.legacy)
+        # The foreign line is now held. It must not freeze A's adoption authority.
+        manifest = self.attach_view(self.source, self.legacy)
+        self.append_event(self.source, manifest)
+        self.commit(self.source, "owner adopts after foreign view claim is held")
+        self.check(base=poisoned_base)
+        self.pull(expected=0)
+        self.assertEqual(self.read_manifest(root, self.aid)["publisher_sig"],
+                         manifest["publisher_sig"])
+
+    def test_owner_view_event_still_detects_stripping_of_legacy_manifest(self):
+        self.git(self.source, "reset", "--hard", self.legacy_ref)
+        self.receiver()
+        self.append_event(self.source, self.legacy, digest="0" * 64)
+        self.commit(self.source, "owner view evidence without publisher statement")
+        self.assert_readers("stripped", "METADATA SIGNATURE REMOVED", fail=True)
+        self.assert_refused(r"metadata.*stripped", base=self.legacy_ref)
+        self.cli(self.source, "hub", "check", expected=1)
+        namespace = self.namespace(self.source)
+        held = namespace["_ledger_raw_lines_local"]()
+        gate = namespace["ManifestEditGate"](held, held, lambda _digest: None)
+        self.assertEqual(gate._authority(self.aid, self.legacy), set())
+        self.assertIn("stripped", " ".join(
+            gate.view_problems(self.aid, self.legacy, self.legacy) or []))
+
+    def test_extra_publisher_cannot_hide_stripping_from_held_owner(self):
+        for already_held in (False, True):
+            with self.subTest(stripping_already_held=already_held):
+                self.setUp()
+                self.git(self.source, "reset", "--hard", self.legacy_ref)
+                if not already_held:
+                    self.receiver()
+                self.append_event(self.source, self.legacy, digest="0" * 64)
+                owner_evidence = self.commit(self.source, "owner view evidence without statement")
+                if already_held:
+                    self.receiver()
+                # A second publisher makes HEAD ambiguous, but cannot erase the
+                # receiver/base's established owner or its stripping evidence.
+                self.append_event(self.source, self.legacy, key=1,
+                                  action="publish", view=False)
+                self.commit(self.source, "extra publish attempts to hide owner's view evidence")
+                self.assert_refused(r"metadata.*stripped",
+                                    base=owner_evidence if already_held else self.legacy_ref)
+
+    def test_incoming_history_cannot_hide_already_held_view_evidence(self):
+        for unrelated in (False, True):
+            with self.subTest(unrelated_history=unrelated):
+                self.setUp()
+                self.git(self.source, "reset", "--hard", self.legacy_ref)
+                self.append_event(self.source, self.legacy,
+                                  digest=view_digest(self.legacy))
+                self.commit(self.source, "held owner view evidence with statement missing")
+                root = self.receiver()
+                before = self.git(root, "rev-parse", "HEAD")
+                self.git(self.source, "reset", "--hard", self.legacy_ref)
+                self.publish(self.source, "new report alongside an old legacy copy\n", key=1)
+                if unrelated:
+                    shutil.rmtree(self.source / ".git")
+                    self.git(self.source, "init", "-q", "-b", "main")
+                self.commit(self.source, "incoming legacy copy omits held view event")
+                rejected = self.pull(expected=1)
+                self.assertRegex(self.output(rejected).lower(), r"metadata.*stripped")
+                self.assertEqual(self.git(root, "rev-parse", "HEAD"), before)
+                self.assertEqual(self.read_manifest(root, self.aid), self.legacy)
+
+    def test_collection_maintainer_authority_survives_foreign_view_event(self):
+        self.git(self.source, "reset", "--hard", self.legacy_ref)
+        aid = self.publish(self.source, json.dumps({
+            "schema": "rc.v1", "scope": "view authority regression",
+            "maintainers": [{"addr": self.addresses[1]}],
+            "includes": [],
+        }), kind="collection")
+        legacy = self.read_manifest(self.source, aid)
+        collection_base = self.commit(self.source, "legacy collection with pinned maintainer")
+        root = self.receiver()
+        self.append_event(self.source, legacy, key=2, digest="0" * 64)
+        foreign_base = self.commit(self.source, "outsider claims a collection view")
+        self.check(base=collection_base)
+        self.cli(self.source, "hub", "check", expected=0)
+        self.pull(expected=0)
+        listing = json.loads(self.cli(root, "list", "--json", expected=0).stdout)
+        self.assertEqual(next(row for row in listing if row["id"] == aid)["view_state"],
+                         "legacy")
+        manifest = self.attach_view(self.source, legacy, key=1)
+        self.append_event(self.source, manifest, key=1)
+        self.commit(self.source, "pinned maintainer adopts after foreign claim")
+        self.check(base=foreign_base)
+        self.pull(expected=0)
+        self.assertEqual(self.read_manifest(root, aid)["publisher_sig"],
+                         manifest["publisher_sig"])
+
+    def test_collection_maintainer_view_event_detects_stripping(self):
+        self.git(self.source, "reset", "--hard", self.legacy_ref)
+        aid = self.publish(self.source, json.dumps({
+            "schema": "rc.v1", "scope": "view stripping regression",
+            "maintainers": [{"addr": self.addresses[1]}],
+            "includes": [],
+        }), kind="collection")
+        legacy = self.read_manifest(self.source, aid)
+        self.append_event(self.source, legacy, key=1, digest="0" * 64)
+        self.commit(self.source, "maintainer view evidence without statement")
+        listing = json.loads(self.cli(self.source, "list", "--json", expected=0).stdout)
+        self.assertEqual(next(row for row in listing if row["id"] == aid)["view_state"],
+                         "stripped")
+        self.cli(self.source, "hub", "check", expected=1)
+
+    def test_legacy_browse_rows_are_compact_but_show_keeps_detail(self):
+        self.git(self.source, "reset", "--hard", self.legacy_ref)
+        for command in (("list",), ("search", "Synthetic view gate report")):
+            row = self.cli(self.source, *command, expected=0).stdout
+            self.assertIn("view=legacy", row)
+            self.assertNotIn("UNSIGNED METADATA", row)
+            self.assertNotIn("no publisher signature", row)
+        self.assertIn("UNSIGNED METADATA (legacy): no publisher signature",
+                      self.cli(self.source, "show", self.aid, expected=0).stdout)
+
+    def test_legacy_browse_does_not_start_ledger_signature_verifier(self):
+        self.git(self.source, "reset", "--hard", self.legacy_ref)
+        wrappers = self.case / "wrappers"
+        wrappers.mkdir()
+        calls = self.case / "node-calls.txt"
+        node = wrappers / "node"
+        node.write_text(
+            "#!" + sys.executable + "\n"
+            "import os, sys\n"
+            "with open(" + repr(str(calls)) + ", 'a') as stream:\n"
+            "    stream.write(sys.argv[1] + '\\n')\n"
+            "os.execv(" + repr(shutil.which("node")) + ", ['node'] + sys.argv[1:])\n")
+        node.chmod(0o755)
+        env = dict(self.environment(self.source),
+                   PATH=str(wrappers) + os.pathsep + self.env["PATH"])
+        # All fixture events remain genuinely signed. The wrapper records only
+        # which helper executes; it neither stubs nor bypasses cryptography.
+        for command in (("list",), ("search", "Synthetic view gate report")):
+            result = subprocess.run([sys.executable, str(COMMONS), *command],
+                                    cwd=self.source, env=env, capture_output=True,
+                                    text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, self.output(result))
+            self.assertFalse(calls.exists(), calls.read_text() if calls.exists() else "")
 
     def test_owner_updates_view_with_new_event_and_repeated_checks(self):
         manifest = copy.deepcopy(self.viewed)

@@ -699,6 +699,51 @@ def _view_delegates(m):
             and re.fullmatch(r"0x[0-9a-fA-F]{40}", a)} if isinstance(addresses, list) else set()
 
 
+_VIEW_EVENT_IDS_CACHE = {"key": None, "ids": None}
+
+
+def _has_local_view_event(aid):
+    """Cheap candidate filter; presence never authenticates or authorises an event."""
+    paths = ledger_files()
+    key = tuple((path, st.st_mtime_ns, st.st_ctime_ns, st.st_size)
+                for path in paths for st in (os.stat(path),))
+    if _VIEW_EVENT_IDS_CACHE["key"] != key:
+        ids = {e["id"] for e, _path in _ledger_raw_lines_local().rows
+               if isinstance(e, dict) and isinstance(e.get("id"), str)
+               and e.get("action") in ("publish", "republish")
+               and entry_is_v2(e) and isinstance(e.get("view"), str)}
+        _VIEW_EVENT_IDS_CACHE.update(key=key, ids=ids)
+    return isinstance(aid, str) and aid in _VIEW_EVENT_IDS_CACHE["ids"]
+
+
+def _legacy_view_authority(m, entries, maintainers=()):
+    """Eligible legacy keys, before considering any claimed view history."""
+    publishers = set()
+    for e in entries:
+        if isinstance(e, dict) and e.get("action") == "publish" \
+                and e.get("id") == m.get("id"):
+            identity = authenticated_event_identity(e)
+            if identity:
+                publishers.add(identity[0])
+    # Republishing somebody else's id never creates ownership. Multiple genuine
+    # publishers remain ambiguous; collection maintainers retain their authority.
+    return (publishers if len(publishers) == 1 else set()) | set(maintainers)
+
+
+def _local_view_maintainers(m):
+    if m.get("type") != "collection":
+        return set()
+    digest = _manifest_digest(m)
+    raw = _read_bytes(blob_read_path(digest)) if digest else None
+    if raw is None or hashlib.sha256(raw).hexdigest() != digest:
+        return set()
+    try:
+        spec = json.loads(raw)
+    except (ValueError, UnicodeDecodeError):
+        return set()
+    return _spec_maintainers(spec)
+
+
 def manifest_view_state(m, entries=None, held=None, authority=None):
     """(state, detail) for metadata, relative to a held view when supplied.
 
@@ -707,9 +752,15 @@ def manifest_view_state(m, entries=None, held=None, authority=None):
     Contextual gates supply that copy and its authority explicitly.
     """
     state, detail, signer = validate_publisher_signature(m, _view_verify_message)
-    entries = ([e for e, _p, _i, _s in ledger_lines()]
-               if entries is None else entries)
+    if state not in ("legacy", "valid"):
+        return state, detail
     aid, digest = m.get("id"), _manifest_digest(m)
+    if entries is None:
+        # Legacy hubs have no view history to authenticate. Avoid starting the
+        # full ledger verifier on every browse command; candidates still take the
+        # same verified, replay/downgrade-filtered snapshot as all other readers.
+        entries = ([e for e, _p, _i, _s in ledger_lines()]
+                   if _has_local_view_event(aid) else [])
     history = []
     for e in entries:
         if not isinstance(e, dict) or e.get("action") not in ("publish", "republish") \
@@ -721,13 +772,15 @@ def manifest_view_state(m, entries=None, held=None, authority=None):
             history.append((e, identity[0]))
     if state == "legacy":
         if history:
-            return "stripped", "ledger records a signed view but publisher_sig is missing"
+            legacy_authority = (authority if held is not None and authority is not None
+                                else _legacy_view_authority(
+                                    m, entries, _local_view_maintainers(m)))
+            if any(who in legacy_authority for _e, who in history):
+                return "stripped", "ledger records a signed view but publisher_sig is missing"
         try:
             view_digest(m)
         except (ValueError, TypeError, RecursionError, OverflowError):
             return "unnormalisable", "cannot canonicalise publisher view"
-        return state, detail
-    if state != "valid":
         return state, detail
     stmt = m["publisher_sig"]["statement"]
     if parse_ts(stmt["ts"]) is None:
@@ -2931,7 +2984,7 @@ def _fmt_row(m):
     if avail:
         title = "[%s] %s" % (avail, title)
     state, note = metadata_note(m)
-    title += "  [" + note + "]"
+    title += "  [" + ("view=legacy" if state == "legacy" else note) + "]"
     tier = tier_display(m) + ("?" if state in VIEW_FAILURES else "")
     return "%-14s %-12s %-8s %-10s %s" % (m["id"], m["type"], m.get("agent", "?"),
                                           tier, title)
@@ -3820,6 +3873,8 @@ def check_attestation(m):
         if parse_ts(stmt.get("observed")) is None:
             return "invalid", "attestation v2 needs an observation timestamp"
         try:
+            # Compare opaque params as exact canonical JSON (including types),
+            # rejecting non-finite values just like the signed view projection.
             signed_params = json.dumps(stmt["params"], sort_keys=True,
                                        separators=(",", ":"), allow_nan=False)
             current_params = json.dumps(params, sort_keys=True,
@@ -7270,7 +7325,8 @@ class ManifestEditGate:
                  trust policy (it is local-only) and so checks signatures alone
     """
 
-    def __init__(self, base_lines, head_lines, blob, peers=None, trust=None):
+    def __init__(self, base_lines, head_lines, blob, peers=None, trust=None,
+                 stripping_lines=None):
         self.blob = blob
         self.peers = peers
         self.trust = trust
@@ -7284,6 +7340,14 @@ class ManifestEditGate:
         held_bytes = {canonical(b) for b in self.base}
         self.all = self.base + [e for e in head if canonical(e) not in held_bytes]
         prime_verify_cache([e for e in self.all if e.get("sig")])
+        # Range/base authority and "new event" binding retain their old meaning.
+        # Stripping additionally consults already-held receiver evidence, which
+        # may postdate the merge base or be absent from an unrelated sender.
+        self.stripping = self.all
+        if stripping_lines is not None:
+            local = self._parse(stripping_lines)
+            known = {canonical(e) for e in self.all}
+            self.stripping = self.all + [e for e in local if canonical(e) not in known]
 
     @staticmethod
     def _parse(lines):
@@ -7335,25 +7399,24 @@ class ManifestEditGate:
             return None
         return spec if isinstance(spec, dict) else None
 
-    def _authority(self, aid, m):
-        """Addresses whose republish may rewrite aid's manifest."""
+    def _authority(self, aid, m, freeze=True):
+        """Eligible keys; by default stripped held manifests freeze edit authority."""
         state, _why, signer = validate_publisher_signature(m, _view_verify_message)
         if state == "valid":
             who = {signer.lower()} | _view_delegates(m)
             if m.get("type") == "collection":
                 who |= _spec_maintainers(self._spec(m))
             return who
-        if state != "legacy" or any(
-                entry_is_v2(e) and e.get("view") for action in ("publish", "republish")
-                for e, _s in self._events(self.base, action, id=aid)):
+        if state != "legacy":
             return set()
-        publishers = {s for _e, s in self._events(self.base, "publish", id=aid)}
-        # A republish-only push cannot turn its signer into an owner. Multiple
-        # publishers of the same content id are ambiguous without an anchored order;
-        # fail closed rather than let a later, backdated publish grant authority.
-        who = publishers if len(publishers) == 1 else set()
-        if m.get("type") == "collection":
-            who |= _spec_maintainers(self._spec(m))
+        who = _legacy_view_authority(
+            m, self.base,
+            _spec_maintainers(self._spec(m)) if m.get("type") == "collection" else ())
+        if freeze and any(signer in who and entry_is_v2(e) and isinstance(e.get("view"), str)
+               and e.get("sha256") == _manifest_digest(m)
+               for action in ("publish", "republish")
+               for e, signer in self._events(self.base, action, id=aid)):
+            return set()
         return who
 
     def _view_event_ok(self, aid, old, new, pool):
@@ -7380,8 +7443,11 @@ class ManifestEditGate:
     def view_problems(self, aid, old, new):
         """Validate a viewed incoming manifest; None selects the legacy gate."""
         state, detail = manifest_view_state(
-            new, self.head, held=old,
-            authority=self._authority(aid, old) if old is not None else None)
+            new, self.stripping if isinstance(new, dict) and "publisher_sig" not in new
+            else self.head, held=old,
+            # Classify stripping against the eligible held keys before freezing
+            # edits. An empty frozen set must not make its evidence disappear.
+            authority=self._authority(aid, old, freeze=False) if old is not None else None)
         if state == "legacy":
             # Removing a previously held statement is stripped even if its ledger
             # has not reached this receiver (e.g. an isolated file import).
@@ -8446,10 +8512,18 @@ def hub_check(a):
         if not isinstance(m, dict):
             problems.append("%s: manifest is not a JSON object" % fn); continue
         view_state, view_detail = manifest_view_state(m, current_entries)
-        if view_state not in ("signed", "legacy"):
-            problems.append("%s: metadata %s: %s" % (m.get("id"), view_state, view_detail))
         if a.base:
             old_m = _git_json_at(mb, "registry/artifacts/" + fn)
+            if old_m is not None and view_state in ("legacy", "stripped"):
+                # An extra publisher in HEAD cannot erase the base's established
+                # owner or its stripping evidence, even for an unchanged manifest.
+                if initial_gate is None:
+                    initial_gate = ManifestEditGate(
+                        _ledger_raw_lines_at(mb), _ledger_raw_lines_at("HEAD"),
+                        lambda dg: _git_blob_at("HEAD", dg) or _git_blob_at(mb, dg))
+                view_state, view_detail = manifest_view_state(
+                    m, current_entries, held=old_m,
+                    authority=initial_gate._authority(m.get("id"), old_m, freeze=False))
             if old_m is None and "publisher_sig" in m:
                 # Added manifests need exact event binding as well as a signature.
                 if initial_gate is None:
@@ -8462,6 +8536,8 @@ def hub_check(a):
             if new_att and old_att != new_att and check_attestation(m)[0] == "partial":
                 problems.append("%s: new legacy attestation does not cover params; a params-bound attestation is required"
                                 % m.get("id"))
+        if view_state not in ("signed", "legacy"):
+            problems.append("%s: metadata %s: %s" % (m.get("id"), view_state, view_detail))
         d = (m.get("content") or {}).get("sha256", "")
         prefix = TYPES.get(m.get("type"), "")
         if fn[:-5] != m.get("id") or (prefix and m.get("id") != "%s-%s" % (prefix, d[:8])):
@@ -8812,7 +8888,8 @@ def cmd_pull(a):
             held_lines, _ledger_raw_lines_at(ref),
             lambda dg: (_read_bytes(blob_read_path_at(inc_store, dg))
                         or _read_bytes(blob_read_path(dg))),
-            peers=peers, trust=trust_allows)
+            peers=peers, trust=trust_allows,
+            stripping_lines=_ledger_raw_lines_local())
         foreign = []
         for e, who in ([] if contained else pub_gate._events(pub_gate.new, "publish")):
             aid = e.get("id")
@@ -8866,8 +8943,9 @@ def cmd_pull(a):
                 strip = lambda d: canonical({k: v for k, v in d.items()
                                              if k not in MANIFEST_LOCAL_FIELDS}
                                             if isinstance(d, dict) else d)
-                if not contained and ("publisher_sig" in local or "publisher_sig" in m
-                        or manifest_view_state(m, pub_gate.head)[0] == "stripped"):
+                if not contained:
+                    # Classify against the held authority even when unchanged:
+                    # head-only ambiguity must not hide an owner's view evidence.
                     reasons = pub_gate.view_problems(aid, local, m)
                     if reasons:
                         rejected.append((aid, reasons))

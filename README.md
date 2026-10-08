@@ -561,9 +561,20 @@ its `result` names such a submission (#45).
 
 **Signed-view readers (#43 phase 1).** `show`, `status`, `list`, `search` and
 `collection show` label legacy metadata and check a present `publisher_sig`.
+Browse rows (`list`, `search`, and `collection show`) use the compact `view=legacy`
+marker; `show`, `status`, and `fsck --views` retain detailed metadata notes.
 `list --json` adds `view_state` and `view_detail`; `fsck --views` audits signatures.
 `status --brief` stays one line and adds `view=<state>`.
 `verify` fails on altered or stripped metadata before executing a workflow.
+For a legacy artifact without `publisher_sig`, stripping evidence must be an
+authenticated v2 `publish`/`republish` view event by its sole verified publish
+signer or, for a collection, a maintainer named in its spec. An unrelated signer's
+view event cannot mark it `stripped` or freeze its owner's edit authority.
+An authorised event still makes removal of the signature fail closed.
+Pull retains receiver-held stripping evidence even when incoming history omits
+it, including evidence recorded after a shared merge base.
+Browse readers use a cheap no-view-event prefilter and reuse a verified ledger
+snapshot across rows, avoiding repeated ledger verification for each artifact.
 If metadata has an unknown view version or cannot be normalised, verification stops
 with exit 3 (`NOT-MACHINE-VERIFIABLE`) before resolving or running its workflow or
 comparator. The diagnostic says the metadata is unchecked; an unsupported future
