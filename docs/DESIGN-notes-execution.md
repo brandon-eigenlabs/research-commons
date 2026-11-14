@@ -52,7 +52,11 @@ Rules:
 1. **Provenance is the pair (workflow hash, input hashes).** A run whose spec has any `unpinned` input emits
    an `authored` statement with the unpinned input listed and `provenance: partial`. It joins no derivation
    group and `verify` exits 4 (nothing to re-run) naming the input (C-exec-03). The run itself is not refused:
-   partial provenance is disclosed, not forbidden.
+   partial provenance is disclosed, not forbidden. Nothing fetches a tag, a URL or a path: the runner supplies
+   an unpinned input's bytes (`run --input <name>=<file>`, for unpinned inputs only; a pinned input's bytes are
+   always the held blob its hash names). Without them the run is refused before staging, naming the input. The
+   statement records the supplied bytes by digest (`provenance_partial.supplied`), never where they came from;
+   the digest records what this run read and pins nothing, so the output still joins no group.
 2. **A spec never carries the replication mode or comparator.** They are single-party fields of the workflow's
    `authored` statement so that they are signed by the author and amendable only by the author (claims-model
    note §4, §5.2). An implementation that finds them in the spec body ignores them there and displays
@@ -279,6 +283,12 @@ Rules:
 | its own `authored` for the same bytes `X` | `reproduced: match` pointing at that statement, with the new environment record; no second `authored` (C-exec-01) |
 | its own `authored` for different bytes `Y` | `reproduced: diverged` (or `match` under the comparator, §5.3) pointing at it; `Y`'s `authored` stays |
 | another key's `authored` for the same provenance | `authored` for its own bytes; the group display handles the rest (claims-model note §5.2) |
+
+Beside each `authored` and each `observed` it emits, the runner signs its own `holds` for that output's
+bytes, in the same unit: it installed them and serves them, and for an `observed` the `holds` is the only
+statement of the runner that pins the capture's bytes as served. A `reproduced` gets none: its bytes are
+either the held `authored`'s (a match) or a divergence the statement itself names. `publish` follows the
+same rule (`--no-holds` withholds it there).
 
 A `reproduced` statement always carries: the statement it reproduces (by hash), the workflow and input
 hashes, the output hashes it produced, the result token, and the environment record. Its `result` is one of

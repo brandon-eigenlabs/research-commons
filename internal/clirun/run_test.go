@@ -39,11 +39,24 @@ func seedKey(name string) wire.Ed25519Key {
 // newRunWorld: spec is built from kv (code, image and resources filled in); held are the input bytes to install.
 func newRunWorld(t *testing.T, policyExtra string, held [][]byte, kv ...any) *runWorld {
 	t.Helper()
-	w := &runWorld{t: t, code: []byte("code:s")}
-	m := []any{"code", canon.String(run.Digest(w.code)), "interpreter", canon.String("sh >=1"),
-		"image", object("reference", canon.String("registry.example/step:1"), "digest", canon.String(imgDigest)),
-		"resources", object("memory", canon.Int(1<<20), "wall_time", canon.Int(10_000))}
-	specBytes := canon.Encode(object(append(m, kv...)...))
+	return newRunWorldCode(t, []byte("code:s"), policyExtra, held, kv...)
+}
+
+// newRunWorldCode is newRunWorld with the workflow's code bytes given; kv overrides the filled-in members.
+func newRunWorldCode(t *testing.T, code []byte, policyExtra string, held [][]byte, kv ...any) *runWorld {
+	t.Helper()
+	w := &runWorld{t: t, code: code}
+	m := map[string]canon.Value{"code": canon.String(run.Digest(w.code)), "interpreter": canon.String("sh >=1"),
+		"image":     object("reference", canon.String("registry.example/step:1"), "digest", canon.String(imgDigest)),
+		"resources": object("memory", canon.Int(1<<20), "wall_time", canon.Int(10_000))}
+	for i := 0; i < len(kv); i += 2 {
+		m[kv[i].(string)] = kv[i+1].(canon.Value)
+	}
+	var flat []any
+	for k, v := range m {
+		flat = append(flat, k, v)
+	}
+	specBytes := canon.Encode(object(flat...))
 	if _, err := run.ParseSpec(specBytes); err != nil {
 		t.Fatal(err)
 	}
@@ -107,6 +120,15 @@ func (w *runWorld) run(f *run.Fake, args ...string) result {
 		env.Exec = &Bridge{Runner: f}
 	}
 	code := cli.Main(append([]string{"run", "--json", w.spec, "--exec-policy", w.policy}, args...), env)
+	return result{code, o.String() + e.String()}
+}
+
+// cmd runs any other command against the world's store.
+func (w *runWorld) cmd(args ...string) result {
+	var o, e bytes.Buffer
+	env := &cli.Env{Stdout: &o, Stderr: &e, Getenv: func(string) string { return "" }, Getwd: func() (string, error) { return w.root, nil },
+		Build: cli.Build{Version: "test", Commit: "0000000"}}
+	code := cli.Main(args, env)
 	return result{code, o.String() + e.String()}
 }
 
@@ -395,19 +417,83 @@ func (w *runWorld) collection(t *testing.T) (string, string) {
 	return g, resolve.EditionID(eb)
 }
 
-// TestRunPublishUnpinnedInput: C-exec-03 through the command. A spec whose input is a mutable tag cannot be
-// staged from a store (it holds content by hash only, and the command fetches nothing): the run is refused
-// before staging, naming the input, and nothing is appended.
+// TestRunPublishUnpinnedInput: C-exec-03 through the command. A spec whose input "feed" is a mutable tag. Without
+// --input the run is refused before staging, naming the input and the option (nothing fetches a tag). --input for
+// the pinned input, or for a name the spec does not declare, is exit 2 before anything runs. With --input
+// feed=<file>: the run stages those bytes, `run --publish` emits an authored with provenance_partial (no
+// provenance) listing the unpinned input and the supplied bytes by digest, never the file's path; the output
+// joins no derivation group (show lists none) and `verify` exits 4 naming the unpinned input, never T0.
 func TestRunPublishUnpinnedInput(t *testing.T) {
-	conformance.Partial(t, "C-exec-03", "a run of an unpinned input through the command needs a way to supply the tag's bytes (none exists: the store holds content by hash and run fetches nothing); the emitted provenance_partial, no group and verify's exit 4 are the planner's and resolver's tests in internal/run")
+	conformance.Covers(t, "C-exec-03")
 	data := []byte("pinned")
 	w := newRunWorld(t, "", [][]byte{data}, "inputs", object("feed", canon.String("registry.example/feed:latest"), "table", canon.String(run.Digest(data))),
 		"outputs", object("result", canon.String("result.txt")))
+	// the step concatenates both staged inputs, so the output proves which bytes were staged
+	cat := func(_ context.Context, in, out string, _ map[string]string) (int, run.Resources) {
+		a, err1 := os.ReadFile(filepath.Join(in, "feed"))
+		b, err2 := os.ReadFile(filepath.Join(in, "table"))
+		if err1 != nil || err2 != nil {
+			return 2, run.Resources{}
+		}
+		os.WriteFile(filepath.Join(out, "result.txt"), append(a, b...), 0o644)
+		return 0, run.Resources{run.CapMemory: 1000, run.CapWallTime: 5, run.CapPids: 1}
+	}
 	before := tree(t, w.root)
-	f := w.fake(writes("result.txt", "x"))
-	want(t, "unpinned", w.publish(f), 3, `"ran":false`, "registry.example/feed:latest", `"published":false`)
+	f := w.fake(cat)
+	want(t, "not supplied", w.publish(f), 3, `"ran":false`, run.ReasonNotSupplied, `\"feed\"`, "--input feed=<file>", `"published":false`)
 	if f.Spawned != 0 || tree(t, w.root) != before {
 		t.Fatalf("spawned %d, store changed %v", f.Spawned, tree(t, w.root) != before)
+	}
+	dir := t.TempDir()
+	feed := filepath.Join(dir, "feed-snapshot.bin")
+	today := []byte("what the tag pointed at today;")
+	os.WriteFile(feed, today, 0o644)
+	for _, c := range []struct {
+		name string
+		args []string
+		subs []string
+	}{
+		{"pinned input", []string{"--input", "table=" + feed}, []string{"problem:pinned-input", `"table"`}},
+		{"undeclared input", []string{"--input", "other=" + feed}, []string{"problem:unknown-input", "feed"}},
+		{"twice", []string{"--input", "feed=" + feed, "--input", "feed=" + feed}, []string{"one input twice"}},
+		{"unreadable", []string{"--input", "feed=" + filepath.Join(dir, "missing")}, []string{"problem:unreadable-file"}},
+		{"not name=file", []string{"--input", "feed"}, nil},
+	} {
+		want(t, c.name, w.publish(f, c.args...), 2, c.subs...)
+		if f.Spawned != 0 || tree(t, w.root) != before {
+			t.Fatalf("%s: spawned %d, store changed %v", c.name, f.Spawned, tree(t, w.root) != before)
+		}
+	}
+	// without --publish too: the pinned input is refused before anything runs
+	want(t, "pinned input, no publish", w.run(f, "--input", "table="+feed), 2, "problem:pinned-input")
+
+	r := w.publish(f, "--input", "feed="+feed)
+	want(t, "supplied", r, 0, `"committed":true`, `"kind":"authored"`, `"supplied"`, run.Digest(today))
+	if strings.Contains(r.stdout, feed) || strings.Contains(r.stdout, "feed-snapshot") {
+		t.Fatalf("the input's path is printed: %s", r.stdout)
+	}
+	au := w.statements("authored")
+	if len(au) != 1 {
+		t.Fatalf("%d authored", len(au))
+	}
+	b := au[0].Body
+	out := run.Digest(append(append([]byte{}, today...), data...))
+	enc := string(canon.Encode(b))
+	if member(b, "content", "digest") != canon.String(out) || member(b, "provenance") != nil ||
+		member(b, "provenance_partial", "supplied", "feed") != canon.String(run.Digest(today)) ||
+		!strings.Contains(string(canon.Encode(member(b, "provenance_partial", "unpinned"))), "feed") ||
+		strings.Contains(enc, "feed-snapshot") || strings.Contains(enc, dir) {
+		t.Fatalf("authored: %s", enc)
+	}
+	// the outcome C-exec-03 names, through the read commands
+	show := w.cmd("show", out, "--json")
+	if show.code != 0 || strings.Contains(show.stdout, `"groups"`) {
+		t.Fatalf("show: the output joined a derivation group: %d %s", show.code, show.stdout)
+	}
+	v := w.cmd("verify", out, "--json")
+	want(t, "verify", v, 4, `"unpinned"`, "feed")
+	if strings.Contains(v.stdout, `"T0"`) {
+		t.Fatalf("verify reported T0: %s", v.stdout)
 	}
 }
 
@@ -486,5 +572,62 @@ func TestRunPublishAbortLeavesStore(t *testing.T) {
 	want(t, "retry", w.publish(w.fake(writes("result.txt", "out-1"))), 0, `"committed":true`)
 	if len(w.statements("authored")) != 1 {
 		t.Fatal("retry did not land")
+	}
+}
+
+// TestRunPublishHoldsRule: run --publish writes the runner's own holds by the same rule as publish
+// (internal/cli.TestPublishHoldsRule): beside each authored and each observed, for its output bytes; never beside a
+// reproduced (its bytes are the held authored's on a match, or a divergence the statement names).
+func TestRunPublishHoldsRule(t *testing.T) {
+	holdsOf := func(w *runWorld) []string {
+		var out []string
+		for _, h := range w.statements("holds") {
+			out = append(out, string(member(h.Body, "content", "digest").(canon.String)))
+		}
+		return out
+	}
+	w := oneOutput(t)
+	want(t, "first", w.publish(w.fake(writes("result.txt", "out-1"))), 0, `"kind":"authored"`)
+	want(t, "match", w.publish(w.fake(writes("result.txt", "out-1"))), 0, `"kind":"reproduced"`, `"state":"match"`)
+	want(t, "diverged", w.publish(w.fake(writes("result.txt", "out-2"))), 0, `"kind":"reproduced"`, `"state":"diverged"`)
+	if h := holdsOf(w); len(h) != 1 || h[0] != run.Digest([]byte("out-1")) {
+		t.Fatalf("authored then two reproduced: holds %v (want only the authored's)", h)
+	}
+	ep := "https://api.example/v1/x"
+	spec := []any{"network", object("required", canon.Array{canon.String(ep)}), "inputs", object(),
+		"outputs", object("a", canon.String("a.json"), "b", canon.String("b.json"))}
+	w = newRunWorld(t, `,"network":["SPEC"]`, nil, spec...)
+	pol, _ := os.ReadFile(w.policy)
+	os.WriteFile(w.policy, bytes.ReplaceAll(pol, []byte("SPEC"), []byte(w.spec)), 0o644)
+	want(t, "observed", w.publish(w.fake(writes("a.json", `{"a":1}`, "b.json", `{"b":2}`))), 0, `"kind":"observed"`)
+	h := holdsOf(w)
+	slices.Sort(h)
+	exp := []string{run.Digest([]byte(`{"a":1}`)), run.Digest([]byte(`{"b":2}`))}
+	slices.Sort(exp)
+	if len(w.statements("observed")) != 2 || !slices.Equal(h, exp) {
+		t.Fatalf("observed: holds %v, want %v", h, exp)
+	}
+}
+
+// TestRunPublishDryRun: run --publish --dry-run runs the workflow and prints the plan (what it would emit, each
+// statement with its body, the blobs it would install and the one journal record) and writes nothing: the store
+// is byte-identical and a later real publish still lands as a first derivation.
+func TestRunPublishDryRun(t *testing.T) {
+	w := oneOutput(t)
+	before := tree(t, w.root)
+	f := w.fake(writes("result.txt", "out-1"))
+	out1 := run.Digest([]byte("out-1"))
+	r := w.publish(f, "--dry-run", "--licence", "result=CC0-1.0")
+	want(t, "dry run", r, 0, `"dry_run":true`, `"committed":false`, `"kind":"authored"`, `"kind":"holds"`,
+		"install blob "+out1, "append 2 statement(s)", `"licence":"CC0-1.0"`)
+	if f.Spawned != 1 {
+		t.Fatalf("the dry run did not run the workflow: spawned %d", f.Spawned)
+	}
+	if tree(t, w.root) != before {
+		t.Fatal("run --publish --dry-run changed the store")
+	}
+	want(t, "real", w.publish(w.fake(writes("result.txt", "out-1"))), 0, `"committed":true`, `"kind":"authored"`)
+	if len(w.statements("authored")) != 1 || len(w.statements("holds")) != 1 {
+		t.Fatal("the real publish after a dry run did not land as a first derivation")
 	}
 }
