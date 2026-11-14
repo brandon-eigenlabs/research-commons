@@ -14,7 +14,7 @@ New here? Read [`docs/WHY.md`](docs/WHY.md): the motivation and the epistemics, 
 
 ## Status
 
-**0.5.0-alpha.3: the third alpha of the next format.** The next format is a clean break from the 0.4 alpha: a
+**0.5.0-alpha.5: the fifth alpha of the next format.** The next format is a clean break from the 0.4 alpha: a
 signed, append-only statement log per key, a store directory (`rc-store/1`), and a Go command-line tool. It is
 alpha: **the format may still change between alpha releases**, and so may `--json` output, key files and execution
 policy files (all marked provisional). The fixed-root identity profile is a candidate under review: its **reader is
@@ -35,7 +35,7 @@ Read it before you rely on an answer.
 Requires Go 1.26 or newer. Developed and tested on Linux; **Windows is not supported** (the sandbox and store use Unix file semantics, and the tool does not build there).
 
 ```bash
-go install github.com/research-common/research-commons/cmd/commons@v0.5.0-alpha.3
+go install github.com/research-common/research-commons/cmd/commons@v0.5.0-alpha.5
 commons --version
 ```
 
@@ -89,8 +89,8 @@ takes `--json`, which prints one JSON object (an RFC 9457 problem-details object
 |---|---|
 | `init` | create a store in a directory |
 | `key new` / `key show` | generate a signing key file / print its signer (never the key) |
-| `package show` | check an external-signing package written by `--prepare` (every member derived from its envelope recomputed, as `--complete` does) and print what a signature would cover: summary, signer, alg, proposed id, `pae_sha256`; reads no store |
-| `key sign` | sign an external-signing package's PAE bytes with a key file, after `package show`'s checks and only when the key is the package's signer; writes the signature `--complete --signature` reads; reads no store |
+| `package show` | check an external-signing package written by `--prepare` (every member derived from its envelope recomputed, as `--complete` does) and print what a signature would cover: summary, signer, alg, proposed id, `pae_sha256` (`--pae-out <file>` writes the PAE bytes for a non-CLI signer; an advisory when `ts` is >300 s ahead of the local clock); reads no store |
+| `key sign` | sign an external-signing package's PAE bytes with a key file, after `package show`'s checks and only when the key is the package's signer; writes the signature `--complete --signature` reads (same future-`ts` advisory; still signs); reads no store |
 | `publish` | sign and commit a statement: authored (with bytes), holds, describes, retracts, or a draft |
 | `publish task` | create a task, or publish a new edition of one |
 | `publish grant` | as a task edition's coordinator, grant a key for that edition (refused when the grant would have no effect) |

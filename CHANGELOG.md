@@ -9,6 +9,15 @@ effect until 1.0.0. See `docs/RELEASING.md` for the bump rules and release steps
 
 ## [Unreleased]
 
+### Added
+- **`package show` and `key sign` warn about a future `ts`.** When an external-signing package's envelope `ts` is
+  more than 300 s ahead of the local clock, both print an advisory (and `--json` carries `advisories`) that the
+  store refuses it at `--complete` and the package should be prepared again with a current `--ts`. Exit codes
+  are unchanged and `key sign` still signs.
+- **`package show --pae-out <file>`** writes the exact PAE bytes a signature covers (no newline) to a new file,
+  for a signer that is not this tool. An existing file is never overwritten, and nothing is written unless every
+  package check passes.
+
 ### Changed
 - **`provenance_partial` is stricter (pre-1.0 tightening).** `unpinned` must name at least one input and name each
   once, and every key of `supplied` must be one of the `unpinned` names (order is not constrained). A line that
