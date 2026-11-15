@@ -9,6 +9,23 @@ effect until 1.0.0. See `docs/RELEASING.md` for the bump rules and release steps
 
 ## [Unreleased]
 
+### Added
+- **`push --dry-run`: what a push would carry, judged as the hub's CI would.** Run in a git checkout of the hub
+  (the store is the checkout): the change is `merge-base(<base>, HEAD)..HEAD`, with `--base` defaulting to
+  `refs/remotes/<remote>/HEAD` (`--remote`, default `origin`; exit 2 when it is not set). Every object gets the
+  verdict `hub check` would give, through the same gate, against the hub's history and `hub-policy.json` at the base.
+  Beside the verdicts, two writer preconditions that are not admission verdicts (no other gate applies them): the
+  anchor before transport (C-btc-03c: a statement whose standing requires an anchor is refused, reader policy
+  `anchor required`, until an `anchors` line by its signer, carried or held by the hub, covers it; a pending proof
+  covers; coverage is per statement; a statement with standing `anchor: none` and no anchor is carried with a warning
+  naming the rule; `--anchor-policy required|none` replaces the standing for every statement), and withheld bytes (a
+  blob whose availability a statement declares withheld, with no serving `holds`, is refused: carrying it would
+  release it). An `anchors` line whose proof blob neither travels nor is held is a warning (`missing-proof` until it
+  is). Data files the working tree has and HEAD does not are listed as uncommitted. Exit 0/1/3 as `hub check`, 1 also
+  on a precondition refusal. Writes nothing (`no registry change; no fetch; no cache; no transport`). No transport is
+  built yet (KNOWN-LIMITS L-17): without `--dry-run`, `push` exits 2 and does nothing. `publish` still does not stamp
+  (KNOWN-LIMITS L-16): run `anchor stamp`, commit, then `push --dry-run`.
+
 ## [0.5.0-alpha.6] - 2026-11-15
 
 ### Added
