@@ -127,6 +127,46 @@ func (a *Actors) bound(st *wire.Statement) bool {
 	return idText(g.Body, "identity") == id && text(object(g.Body, "delegate"), "key") == st.Signer
 }
 
+// NotEstablished is the freshness of every identity answer (the model's word, re-exported: only this adapter
+// imports the model).
+const NotEstablished = identitymodel.NotEstablished
+
+// Grant is one grant naming a delegate key, with its grant-level state (profile §4.1, "requirements on
+// consumers"): the second axis of every view of a delegate, beside the key's bare-key status.
+type Grant struct {
+	Grant, Identity string
+	// State is identitymodel.GrantStatus as text: open, cut at last_good, cut null, unknown or denied.
+	State string
+	// LastGood is each last_good of an effective cut at a line (state cut at last_good).
+	LastGood []string
+	// Cuts is every held cut addressed to the grant on its identity's lineage.
+	Cuts []string
+	// Why lists the model's reasons, then its warnings, as Eligible's why does.
+	Why []string
+	// Freshness is always identitymodel.NotEstablished: a cut this reader does not hold is not ruled out.
+	Freshness string
+}
+
+// Grants lists every grant of the snapshot naming delegate as its delegate key, by grant id, each with its
+// grant-level state. A grant not signed by its identity's root key is never open: the model's root-ancestry check
+// denies it (wrong_signer), as it denies every act under it.
+func (a *Actors) Grants(delegate string) []Grant {
+	var out []Grant
+	for _, gid := range a.s.model.GrantsTo(identitymodel.Key(delegate)) {
+		gs := a.s.model.GrantStateWith(gid, a.lim)
+		g := Grant{Grant: string(gid), Identity: string(gs.Identity), State: string(gs.Status), Freshness: gs.Freshness}
+		for _, l := range gs.LastGood {
+			g.LastGood = append(g.LastGood, string(l))
+		}
+		for _, c := range gs.Cuts {
+			g.Cuts = append(g.Cuts, string(c))
+		}
+		g.Why = reasons(identitymodel.Result{Reasons: gs.Reasons, Warnings: gs.Warnings})
+		out = append(out, g)
+	}
+	return out
+}
+
 func mapStatus(s identitymodel.Status) string {
 	switch s {
 	case identitymodel.Eligible:
