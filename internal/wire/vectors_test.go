@@ -63,7 +63,7 @@ func wantRefusal(t *testing.T, err error, class refusal.Class, reason, detailHas
 // TestPositiveVectors: every positive vector (V1–V10, E1–E2) reads as valid, reproduces its signed string
 // byte for byte, its byte count and its id, and stores its sig unchanged (each is already canonical).
 func TestPositiveVectors(t *testing.T) {
-	conformance.Partial(t, "C-core-02a", "display (neither shown as a replay) needs the resolver and a surface")
+	conformance.Partial(t, "C-core-02a", "the vectors read as one statement each; the case itself is covered by cli.TestOneFieldTwoStatementsNoReplay")
 	v := vectors(t)
 	all := append(append([]conformance.Vector{}, v.Positive...), v.EdPositive...)
 	for _, x := range all {
@@ -312,7 +312,7 @@ func TestSignedStringNegatives(t *testing.T) {
 // TestEd25519Speccheck: the twelve speccheck cases are refused at the step the vectors file names, and the
 // stock verifier alone accepts some of them (so the pre-checks are load-bearing, not decoration).
 func TestEd25519Speccheck(t *testing.T) {
-	conformance.Partial(t, "C-core-144", "(b) as raw cases, not yet delivered as statements; (a) rotation: keylog.TestCrossAlgorithmRotation; one implementation, not two")
+	conformance.Partial(t, "C-core-144", "(b) as raw cases against the production verifier; the case itself is covered by sig.TestStatementsTwoImplementations")
 	v := vectors(t)
 	stockAccepts := 0
 	for _, x := range v.EdNegative {
@@ -342,7 +342,7 @@ func TestEd25519Speccheck(t *testing.T) {
 // case message, so step 4 alone would refuse most of them; the point is that the pinned pre-checks refuse
 // every one before step 4, at the step the vectors file names, whatever the message.
 func TestEd25519SpeccheckAsStatements(t *testing.T) {
-	conformance.Partial(t, "C-core-144", "(b) delivered as statements: done here; (a) cross-algorithm rotation chain: keylog.TestCrossAlgorithmRotation; verdicts across two Ed25519 libraries not run")
+	conformance.Partial(t, "C-core-144", "(b) delivered as statements to the production reader: done here; the case itself is covered by sig.TestStatementsTwoImplementations")
 	v := vectors(t)
 	for _, x := range v.EdNegative {
 		if x.PublicKey == "" {
