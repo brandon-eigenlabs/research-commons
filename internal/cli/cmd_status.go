@@ -17,6 +17,7 @@ import (
 
 func init() {
 	Register(&Command{Name: "status", Summary: "store recovery state, unfinished operations and the durability declaration", Store: true, ReaderPolicy: true,
+		Help: "Every open of the store replays unfinished journal records first; status reports what that replay did and every record still unfinished, with the error and the next step when a replay failed. There is no repair command yet: an unfinished operation is finished by the next open once its cause is fixed (fetch a missing blob, free the disk, fix a permission). There is no operation history: the journal record of an operation is deleted once it is finished.",
 		Flags: []Flag{{Name: "limits", Help: "also print every limit this tool applies: name, value, where the value comes from and what it bounds"}},
 		Run:   statusCmd})
 }
@@ -29,8 +30,18 @@ func statusCmd(c *Ctx) (*Obj, int, error) {
 	o := newObj().set("store", refV(c.Root)).set("layout", refV(store.Layout()))
 	state := "nothing pending"
 	ops := listV{}
+	blocked := map[string]store.RecoveryEvent{}
+	for _, b := range c.Store.Blocked() {
+		blocked[b.Op] = b
+	}
 	for _, r := range recs {
-		ops = append(ops, newObj().set("operation", refV(r.Op)).set("kind", textV(r.Kind)).set("store_state", tokV(tok(r.What))))
+		x := newObj().set("operation", refV(r.Op)).set("kind", textV(r.Kind)).set("store_state", tokV(tok(r.What)))
+		if b, ok := blocked[r.Op]; ok {
+			// degraded open: this open could not finish the record; its statements are hidden, its signers' writes
+			// refused, and every other command works
+			x.set("what", tokV(tok("replay failed"))).set("error", peerV(b.Detail)).set("next", textV(replayFailedNext))
+		}
+		ops = append(ops, x)
 		if r.What == "committed, needs repair" || state == "nothing pending" {
 			state = r.What
 		}
