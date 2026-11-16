@@ -1,0 +1,116 @@
+# Publish the Python wheels of the Python package (`python/`) to PyPI on a release.
+# Runs on `workflow_dispatch` too: a manual run (re)publishes the wheels of the release the
+# chosen tag names, without touching anything else. A dispatch builds from the TAG's commit,
+# not from the branch it was dispatched from, so a backfill reproduces exactly what that
+# release would have published. Every archive and the SHA256SUMS file are verified against
+# the release workflow's build attestations before anything is opened: checksums catch
+# corruption, attestations catch substitution. The action authenticates to PyPI by OIDC
+# trusted publishing only: no API token exists in the repository or the environment, and the
+# PyPI project's publisher entry (owner, repository, workflow name, environment) must match
+# these values exactly or PyPI refuses the upload. Public repo: actions pinned by full commit
+# SHA, a read-only default token, and no other permission than the OIDC id-token this one job
+# needs.
+name: publish-python
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag whose wheels to build and publish (e.g. v0.5.0-alpha.6)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build wheels
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      # On workflow_dispatch, GITHUB_SHA is the dispatching branch's head. Resolve the tag
+      # first and check out THAT commit, so the build always uses the release's own tree
+      # (build_wheels.py, package metadata, VERSION): a backfill of an old tag is built with
+      # that tag's tooling or refused, never with newer branch tooling.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.tag }}
+      - name: The checkout must be the requested release commit
+        env:
+          TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.tag }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "+${TAG}:refs/checks/tag"
+          tag_sha="$(git rev-parse "refs/checks/tag^{commit}")"
+          # Compare with what is checked out, not GITHUB_SHA: on workflow_dispatch GITHUB_SHA
+          # is the dispatching branch's head and would refuse every backfill.
+          head_sha="$(git rev-parse HEAD)"
+          if [ "$tag_sha" != "$head_sha" ]; then
+            echo "checkout $head_sha is not the commit the tag $TAG names ($tag_sha)" >&2
+            exit 1
+          fi
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Download the release archives
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir rel
+          gh release download "$REF" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'SHA256SUMS' --pattern '*.tar.gz' --dir rel --clobber
+      # Checksums alone cannot catch substitution: an archive and its SHA256SUMS line can be
+      # replaced together by anyone who can edit a release. The release workflow attests its
+      # archives, so require that attestation (built by release.yml, from this same tag)
+      # before any archive is opened.
+      - name: Verify the build attestations
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.tag }}
+        run: |
+          set -euo pipefail
+          for f in rel/*.tar.gz rel/SHA256SUMS; do
+            gh attestation verify "$f" --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+              --source-ref "refs/tags/$REF"
+          done
+      - name: Build the wheels
+        run: |
+          set -euo pipefail
+          python3 python/scripts/build_wheels.py rel --out dist
+      - name: Check the wheels in a clean virtualenv
+        run: |
+          set -euo pipefail
+          python3 -m venv /tmp/smoke
+          /tmp/smoke/bin/pip install --quiet dist/research_commons-*manylinux_2_17_x86_64.whl
+          /tmp/smoke/bin/commons --version
+          test "$(/tmp/smoke/bin/commons --version)" = "$(tr -d '[:space:]' < VERSION)"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: wheels
+          path: dist/*.whl
+          if-no-files-found: error
+
+  publish:
+    name: publish to PyPI (trusted publishing)
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: wheels
+          path: dist
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+        with:
+          verbose: true

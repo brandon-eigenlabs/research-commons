@@ -103,7 +103,7 @@ A plan, not a schedule; the maintainers make the final call and may revise this 
    ```
    A dry run (Actions → release → Run workflow) builds and checksums without attesting or
    uploading.
-8. **Python wheels** (manual; nothing in CI builds or uploads them). The Python package in `python/` carries the
+8. **Python wheels** (built and published by CI; the manual path below is the pre-release check). The Python package in `python/` carries the
    binary in one platform wheel per release archive. Its version must already equal `VERSION` mapped to
    PEP 440 (`0.5.0-alpha.3` → `0.5.0a3`): set `version` in `python/pyproject.toml` and `__version__` in
    `python/src/research_commons/__init__.py` in the step-2 version PR, or the build refuses. After step 7,
@@ -116,9 +116,21 @@ A plan, not a schedule; the maintainers make the final call and may revise this 
    ```
    The script checks every archive against `SHA256SUMS` before opening it, refuses a version, platform or
    binary-format mismatch, and prints a digest per wheel; building twice gives identical bytes. Install one
-   wheel in a clean virtualenv and run `commons --version` before uploading. **Publishing to PyPI is a
-   maintainer action** (a trusted publisher configured on the `research-commons` project; no API token in
-   the repository), done from the tagged commit.
+   wheel in a clean virtualenv and run `commons --version` before trusting a release.
+   **Publishing to PyPI** runs `.github/workflows/publish-python.yml` when the release is published: it repeats
+   the download → checksum-verify → build → smoke-test steps and uploads the wheels by OIDC trusted publishing
+   (environment `pypi`, `pypa/gh-action-pypi-publish` pinned by full SHA; no API token exists anywhere). Two
+   maintainer actions come first, once: (a) configure the PyPI trusted publisher (owner `research-common`, repository
+   `research-commons`, workflow `publish-python.yml`, environment `pypi`); (b) create the GitHub environment `pypi`
+   with deployment refs restricted to the branch `next` and tags `v*`, and a required reviewer. (b) is a
+   precondition of the first run, not a follow-up: a dispatch runs the dispatching ref's copy of
+   `publish-python.yml`, and that copy is what PyPI accepts, so the environment's ref restriction is the control
+   that keeps a workflow edited on another branch from publishing. After that every release publishes its wheels
+   (after the reviewer approves the deployment), and Actions → publish-python → Run workflow can republish any
+   existing tag's wheels. A dispatch checks out and builds the tag's own commit, so a
+   backfill reproduces that release's wheels, and refuses any archive whose build attestation (signed by
+   `release.yml` at that tag) does not verify. The publish step emits PEP 740 attestations on PyPI by default
+   (`gh-action-pypi-publish` under trusted publishing), so published wheels carry provenance too.
 9. **Hub template pin.** In `research-commons-hub-template`, on its `next` branch, set
    `TOOL_REF` to the tag's **full 40-character commit SHA** (immutable), with the tag as a
    trailing comment (`# v0.5.0-alpha.1`).
