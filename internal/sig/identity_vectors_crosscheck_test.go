@@ -49,8 +49,8 @@ func TestSignedIdentityVectorsTwoImplementations(t *testing.T) {
 	}
 	nPos := len(cases)
 	for _, x := range v.Negative {
-		if x.Alg != "ed25519" {
-			continue
+		if x.Alg != "ed25519" || !strings.HasPrefix(x.Signer, "ed25519:") {
+			continue // a signer outside the Ed25519 key form is refused before any signature check
 		}
 		step := ""
 		if !x.SigVerifies {
@@ -61,8 +61,8 @@ func TestSignedIdentityVectorsTwoImplementations(t *testing.T) {
 		}
 		cases = append(cases, c{x.Name, x.Signer, x.VerifiedString, x.Sig, step})
 	}
-	if nPos != 8 || len(cases) != 8+12 {
-		t.Fatalf("%d positives / %d cases of Ed25519, want 8 / 20", nPos, len(cases))
+	if nPos != 8 || len(cases) != 8+16 {
+		t.Fatalf("%d positives / %d cases of Ed25519, want 8 / 24", nPos, len(cases))
 	}
 	accepted, stockOnly := 0, 0
 	for i, x := range cases {
@@ -99,9 +99,9 @@ func TestSignedIdentityVectorsTwoImplementations(t *testing.T) {
 		}
 	}
 	// the positives, plus the three negatives whose signature is genuine and whose line the reader retains
-	// (rc/1 with an actor, rc/1 naming the identity crit, rc/2 revoke_key)
-	if accepted != nPos+3 {
-		t.Fatalf("%d cases verified, want %d (the positives and 3 genuinely signed negatives); the harness may not reach the pre-checks", accepted, nPos+3)
+	// (rc/1 with an actor, rc/1 naming the identity crit, rc/2 revoke_key, a grant naming a future-algorithm delegate, an actor renamed, an actor in the body)
+	if accepted != nPos+6 {
+		t.Fatalf("%d cases verified, want %d (the positives and 6 genuinely signed negatives); the harness may not reach the pre-checks", accepted, nPos+6)
 	}
 	// negatives built from valid signatures fail only at step 4 (the signed bytes changed); the three wire-set edge
 	// cases fail before it; the identity point is accepted by the stock verifier over this message too

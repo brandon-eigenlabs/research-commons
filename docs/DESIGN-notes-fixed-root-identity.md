@@ -51,7 +51,7 @@ An offline bundle can omit a cut; all positive results are relative to held evid
 
 ### 2.1 Selected proposal
 
-A future dual-major reader would implement both:
+The production reader (dual-major) implements both, and the writer writes both:
 
 * **`rc/1`:** existing bare-key statements retain their signed bytes, ids and semantics.
   All raw `rotate_key` and `revoke_key` events **remain `rc/1`, without identity actor or
@@ -59,7 +59,10 @@ A future dual-major reader would implement both:
   on bare-key history. This candidate does not accept these events as `rc/2`.
 * **`rc/2`:** all statements of this candidate require
   `crit:["x_identity_v1"]` and an object `body.x_identity_v1`. The currently recognized
-  critical registry contains only that token. This includes administrative statements,
+  critical registry contains only that token. The schema states the one value this profile
+  writes; a reader reads a `crit` that names `x_identity_v1` **and** a token it has not
+  registered as unsupported (the extension point of wire §6), and one that lacks
+  `x_identity_v1` as invalid. This includes administrative statements,
   typed resource bodies and identity-aware task lifecycle statements. `x_actor_v1` is
   optional, but when present is a **signed envelope** object, not part of the body.
 
@@ -121,6 +124,14 @@ Reuse the existing wire rules, not a new JSON or cryptographic profile:
   bytes (including its EIP-191 length prefix); existing address/recovery and canonical
   signature rules. Unknown algorithms grant nothing. No EIP-712, WebAuthn, OpenPGP,
   or smart-contract-wallet proof is accepted as a substitute.
+* **One statement can carry two valid signatures** (inherited from `rc/1`). Nobody but the
+  signer can make a second one: the pinned Ed25519 rule refuses a non-canonical `S` (wire §4,
+  step 1), and the other valid EIP-191 encodings of a signature are canonicalised to the one
+  stored form. But the signer can: a signature made with a different nonce (an Ed25519 signer
+  that does not derive it as RFC 8032 does, or a second ECDSA signing) is a different `sig` that
+  verifies over the same PAE, and a reader cannot tell which is "the" signature. Ids exclude
+  `sig`, so the statement id is the same and nothing that counts changes; but two holders'
+  stored bytes, and receipts over those bytes, can differ. Compare statements by id.
 
 Existing unknown noncritical fields remain signed, retained and semantically inert.
 New actor, subject, permission, target and critical-marker objects are closed in the
@@ -138,6 +149,7 @@ claim that the remaining positive grant is complete (§5).
 | `rc/2`, understood marker and one actor I/G | Exactly I/G, subject to authority checks; never a key fallback. |
 | Actor without body marker or without critical declaration | Invalid candidate even if correctly signed. |
 | Marker present but unknown critical feature/profile | Unsupported/non-passing, not bare-key interpretation. |
+| An envelope member in the actor name space other than `x_actor_v1` (`x_actor_v2`, …), with or without `x_actor_v1`, or any `x_actor_*` member inside the body | Unsupported/non-passing (`actor <member>`), never a key fallback. `crit` names body members, so it cannot guard the envelope's actor: this rule does. |
 | Marker object has a field inappropriate to this kind | Invalid candidate; do not ignore it. |
 
 Marker fields are kind-specific: `authored`/`observed` may contain `amends`;
@@ -244,8 +256,18 @@ complete key-local linkage rules; an arbitrary valid signature or nonzero head i
 an inception. Root freshness/dedication is a writer requirement, not proof that no
 other log exists. Validators enforce K != R within this identity.
 
-Permissions form a nonempty, sorted, duplicate-free set (at most 64 entries). Sorting
-for structured sets is by UTF-16 ordering of each entry's JCS text; string sets use
+**Administrative bodies are open; restrictions go behind `crit`.** The grant, inception and
+cut bodies accept unknown members (§2.2: signed, part of the id, semantically inert), as every
+`rc/1` body does. So a new member a reader must honour to evaluate authority (an expiry, a
+budget, any restriction) is **never** introduced as a plain optional field: a reader that
+predates it would read the statement valid and the authority unrestricted, which is the unsafe
+direction. It is introduced only behind a new `crit` token, which a reader that lacks it reads
+unsupported (§2.1) and never as a broader grant. A plain optional member may only add
+information that never changes an authority decision.
+
+Permissions form a nonempty, sorted, duplicate-free set (at most 64 entries). Every set
+in this profile (permissions, target sets, `amends`, typed subjects, `predecessors`, `merges`)
+is **sorted by canonical encoding**: for structured sets by UTF-16 ordering of each entry's JCS text; string sets use
 the ordinary UTF-16 string order. Target arrays are nonempty sorted sets of at most
 256 entries. Each entry has exactly the fields in the table; no missing/empty target
 means unlimited. Multiple entries may cover different targets for the same kind;
@@ -272,7 +294,11 @@ missing `amend` (absence is not a mode), a value that is neither a boolean nor a
 two target modes, a known mode on the wrong kind, and `any_resource` / `any_task`, which
 this profile excludes for good. The schema describes `fixed-root-v1` itself (including
 `amend:"own"`) and rejects all three extensions; the reader's unsupported reading is what lets a later version add
-one without older readers denying acts they cannot judge. That uncertainty is confined to the one grant: grants only
+one without older readers denying acts they cannot judge. A key is a fourth such point: a grant whose `delegate.key`,
+or a statement whose typed subject `{key: K}` (a controller, a task-role beneficiary or issuer), names a key in a form
+this reader does not implement (a scheme prefix it does not know and lowercase hex, the other-key form of wire §6, as
+a future `alg` would write it) reads unsupported (`key form <scheme>`), never invalid, provided the rest of its body is
+well formed; a string under a known scheme (`0x`, `ed25519:`) in the wrong shape stays invalid. That uncertainty is confined to the one grant: grants only
 accumulate and never restrict each other, and every permission kind in `fixed-root-v1`
 is a leaf operation, so no grant can carry a power over another grant, a cut, or the
 root. Acts under the unsupported grant read unknown; sibling grants are evaluated
@@ -364,6 +390,13 @@ remain in the explanation. Cut monotonicity holds only while grants/root state a
 other evidence are fixed; it is not a global theorem about adding arbitrary evidence.
 A cut applies wherever it sits on I's root lineage; it need not descend from the grant
 it names (this is what lets a cut clear a root fork).
+
+**An unreadable cut makes the identity's acts unknown, by design.** A cut this reader cannot
+read (an extension it lacks, a cut with no readable `grant`) could restrict any of I's grants,
+so every act of I reads unknown until it can be read: fail safe, never a pass that ignores a
+possible restriction. An unreadable grant affects only itself (§3): grants only add authority,
+so not reading one can deny nothing else. Extending the cut is therefore costly for older
+readers, and a later profile version should prefer extensions on the grant.
 
 ### 4.1 Deliberate worker self-revocation exception
 
@@ -971,10 +1004,13 @@ Files in this candidate:
   typed subjects, permissions and role/actor extensions. Root schema requires `sig`;
   `#/$defs/draft` is explicitly unsigned. The schema is standalone, with only local
   references. Sorting, cross-field thresholds, canonical time and crypto are additional
-  specified checks, not capabilities attributed to ordinary JSON Schema validators.
+  specified checks, not capabilities attributed to ordinary JSON Schema validators. Every
+  `uniqueItems` list is a set whose `description` says so: sorted by canonical encoding and
+  duplicate-free (§3), and a reader refuses an unsorted one; reject vectors pin the order for
+  controllers, `permissions`, a target set and `amends`.
 * `fixed-root-identity-policy.schema.json`: standalone local policy syntax; same-subject
   selection conflicts and set sorting require the additional checks.
-* `fixed-root-identity.vectors.json`: **82 unsigned schema vectors** (the signed counterpart is below), including all
+* `fixed-root-identity.vectors.json`: **86 unsigned schema vectors** (the signed counterpart is below), including all
   candidate kinds, forbidden `rc/2` key events, actor/marker combinations, typed mixed
   controllers, scope modes, tasks, policy and negatives. Example ids are SHA-256 of
   labels, not actual referents; example signer strings are not proven public keys.
@@ -991,12 +1027,19 @@ Files in this candidate:
   (`…<kind>.v2+json`), the JCS payload, the exact PAE signed string, its byte count, the statement id, the
   signature and the delivered line, plus the outcome the candidate reader must give (and the actor it must
   read). Negative entries are delivered lines derived from a positive by exactly the members named in
-  `changed_members`: the actor changed or stripped after signing; a signature over the `.v1+json` preimage of an
+  `changed_members`: the actor's `grant` or `identity` changed, or the actor stripped, after signing; a signature over the `.v1+json` preimage of an
   `rc/2` envelope; `rc/2`→`rc/1` and `rc/1`→`rc/2` relabels; (valid signatures, retained as given) an `rc/1`
   line carrying `x_actor_v1` (valid, actor not read), an `rc/1` line naming `x_identity_v1` in `crit`
   (unsupported), and an `rc/2` `revoke_key` (invalid, never an identity act); and, for Ed25519, three wire-format
   edge cases (`NE1`, `NE7`, `NE11`) and the identity-point forgery delivered as `rc/2` identity lines, each a bad
-  signature at the pinned step. The vectors check **representation** (bytes, domain separation, ids,
+  signature at the pinned step; and, per algorithm, a future algorithm (wire §4): an `rc/1` line and an `rc/2` act
+  re-labelled `alg: ml-dsa-65` with an `ml-dsa-65:<hex>` signer (retained `unsupported` with an id, never verified),
+  and the same signer under the implemented `alg` (malformed: a signer outside its algorithm's key form); a grant
+  naming a delegate in that future key form (unsupported); an act whose actor is renamed `x_actor_v2`, and one whose
+  actor is moved into the body (both unsupported, never a bare-key claim); and the actor's `identity` changed
+  after signing (a bad signature, like the `grant` tamper). `edition_ids` pins the `rc/2` edition id of one
+  edition body (§2.2: SHA-256 of the PAE under `…edition-body.v2+json`) beside the different id the same bytes
+  have under the `rc/1` domain. The vectors check **representation** (bytes, domain separation, ids,
   signatures, reader outcome), never authority. `internal/wire` regenerates the file from the labels and compares
   it byte for byte, runs every entry through the production `rc/2` reader and the unchanged `rc/1` reader, and
   `internal/sig` verifies every Ed25519 signature under two independent implementations (the pinned verifier and
@@ -1012,8 +1055,9 @@ Files in this candidate:
   restricted local JSON Schema interpreter and real synthetic Ed25519/EIP-191 tests.
   It reuses the existing JCS, PAE, signature verifier, time and base-schema functions.
   New typed controller shapes are checked explicitly; unchanged base fields are checked
-  independently, so critical-marker recognition cannot bypass them. No production
-  registry, reader, writer or global major is changed.
+  independently, so critical-marker recognition cannot bypass them. It checks the
+  schema and vectors on their own; the production reader is bound to the same vectors by
+  `internal/wire` tests (an accepted draft must read valid or unsupported, a rejected one never valid).
 * `internal/keylog/fixed_root_identity_profile_test.go`: actual old-reader mixed-log
   behavior, without claiming whole-resolver mixed-resource safety.
 * `internal/identity` (with `internal/identitymodel`): the candidate admission adapter
@@ -1063,6 +1107,14 @@ concrete identity task-contract profile; the production evidence-snapshot serial
 caches and replay; independent review of the major transition; detached signing
 packages/connectors and custody/hardware usability drills. No release, deployment, live
 keys or devices are implied by these artifacts.
+
+**What freezing `fixed-root-v1` does not freeze.** The root is one classical key (`ed25519` or
+`eip191-secp256k1`) and has no rotation in this profile: losing or retiring it ends the identity's
+ability to issue or cut grants. The way out is a **new inception profile** (a new `profile` token on
+`identity_inception`), which a 1.0 reader reads unsupported for that whole identity, never as
+`fixed-root-v1`; a post-quantum or rotating root needs no change to `rc/2` itself. Statement and
+edition ids are bare SHA-256 over the PAE string: a change of hash function is a new format (a new
+major), not a profile change.
 
 ## 10. Conformance cases
 

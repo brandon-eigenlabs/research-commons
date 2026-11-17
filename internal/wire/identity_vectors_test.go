@@ -278,6 +278,8 @@ func ivNegs(chain string, root, work Key, pos []*ivPos, t testing.TB) []*ivNeg {
 	k0 := by["worker-genesis"]
 	refusedBad("neg-actor-tampered", "x_actor_v1.grant changed after signing", a1, work,
 		setField(a1.env, ActorField, ivObj("identity", a1.actorI, "grant", a1.actorI)), a1.sig, a1.ss)
+	refusedBad("neg-actor-identity-tampered", "x_actor_v1.identity changed after signing", a1, work,
+		setField(a1.env, ActorField, ivObj("identity", a1.actorG, "grant", a1.actorG)), a1.sig, a1.ss)
 	refusedBad("neg-actor-stripped", "x_actor_v1 removed after signing (an act for an identity cannot be turned into a bare-key act)", a1, work,
 		dropField(a1.env, ActorField), a1.sig, a1.ss)
 	v1 := work.Sign(PAE(ivPType("authored", 1), canon.Encode(a1.env)))
@@ -300,6 +302,41 @@ func ivNegs(chain string, root, work Key, pos []*ivPos, t testing.TB) []*ivNeg {
 	rv2 := ivDraft("rc/2", "revoke_key", 4, string(rv.env.Members["prev"].(canon.String)), true, ivObj("reason", "key_compromise"), root)
 	readOK("neg-rc2-revoke-key", "rc/2 revoke_key (correctly signed; raw key events stay rc/1 in this profile)", rv, root,
 		rv2, 2, "invalid statement", "raw key events stay rc/1 in this profile", false)
+	// A differently spelled or misplaced actor (§2.3, never a key fallback): unsupported, never a valid bare-key act.
+	actor := a1.env.Members[ActorField]
+	readOK("neg-actor-v2", "x_actor_v1 renamed x_actor_v2 and re-signed (an actor form this reader does not know: unsupported, never a bare-key claim)", a1, work,
+		setField(dropField(a1.env, ActorField), "x_actor_v2", actor), 2, "unsupported", "actor x_actor_v2", false)
+	readOK("neg-actor-in-body", "x_actor_v1 moved into the body and re-signed (no actor is read there: unsupported, never a bare-key claim)", a1, work,
+		setField(dropField(a1.env, ActorField), "body", setField(a1.env.Members["body"].(*canon.Object), ActorField, actor)), 2, "unsupported", "actor body."+ActorField, false)
+	gr := by["grant"]
+	gb := gr.env.Members["body"].(*canon.Object)
+	fd := setField(gb, "delegate", setField(gb.Members["delegate"].(*canon.Object), "key", canon.String("ml-dsa-65:"+strings.Repeat("5a", 40))))
+	readOK("neg-grant-future-delegate", "identity_grant naming a delegate key in a future algorithm's form (correctly signed; unsupported, not invalid: a later reader may accept its acts)", gr, root,
+		setField(gr.env, "body", fd), 2, "unsupported", "key form ml-dsa-65", false)
+	// A future algorithm (wire §4): the alg and the signer of a positive are replaced by an algorithm this reader does not
+	// implement and a key in that algorithm's own form; the sig is carried over, opaque. Retained unsupported with an id,
+	// never verified, in both majors. The same signer under an implemented alg stays malformed.
+	future := "ml-dsa-65:" + strings.Repeat("5a", 40)
+	futureRead := func(name, title string, of *ivPos) {
+		env := setField(setField(of.env, "alg", canon.String("ml-dsa-65")), "signer", canon.String(future))
+		major := 2
+		if ivStr(env, "rc") == "rc/1" {
+			major = 1
+		}
+		line := string(canon.Encode(setField(env, "sig", canon.String(of.sig))))
+		out = append(out, &ivNeg{name: chain + "-" + name, chain: chain, title: title, of: of.name, alg: "ml-dsa-65", signer: future,
+			delivered: line, verified: string(PAE(ivPType(ivStr(env, "kind"), major), canon.Encode(env))), sig: of.sig,
+			changed: ivDiff(ivParseLine(t, line), ivParseLine(t, of.line)), result: "read", status: "unsupported", why: "alg ml-dsa-65"})
+	}
+	futureRead("neg-future-alg-rc1", "rc/1 line under a future alg with that algorithm's own key form (retained unsupported, not malformed)", k0)
+	futureRead("neg-future-alg-rc2", "rc/2 identity act under a future alg with that algorithm's own key form (retained unsupported, not malformed)", a1)
+	wrong := setField(a1.env, "signer", canon.String(future))
+	wline := string(canon.Encode(setField(wrong, "sig", canon.String(a1.sig))))
+	out = append(out, &ivNeg{name: chain + "-neg-known-alg-future-signer", chain: chain,
+		title: "an implemented alg with a signer outside its key form (a future algorithm's) stays malformed", of: a1.name, alg: work.Alg(),
+		signer: future, delivered: wline, verified: string(PAE(ivPType("authored", 2), canon.Encode(wrong))), sig: a1.sig,
+		changed: ivDiff(ivParseLine(t, wline), ivParseLine(t, a1.line)), result: "refused", class: string(refusal.Intrinsic),
+		reason: refusal.MalformedStatement, detail: "neither"})
 	return out
 }
 
@@ -378,7 +415,7 @@ func ivBuild(t testing.TB) (string, []*ivPos, []*ivNeg) {
 		}
 	}
 	top := ivObj(
-		"description", "Signed rc/2 test vectors of the CANDIDATE fixed-root identity profile (DESIGN-notes-fixed-root-identity.md §2.2, §9), both required algorithms. Each positive entry is a REPRODUCIBLE signed line: payload_type, jcs (the envelope without sig, the PAE payload), signed_string (the exact signed bytes), bytes, id and sig follow from the published key and the entry's envelope; line is what a peer sends. Each negative entry is one delivered line with the outcome the candidate reader must give, derived from the positive named in of by exactly the members named in changed_members. The profile is NOT active: these vectors check REPRESENTATION (bytes, domain separation, ids, signatures, reader outcome), never authority; whether an act is eligible is the evaluator's, not a vector's.",
+		"description", "Signed rc/2 test vectors of the fixed-root identity profile (DESIGN-notes-fixed-root-identity.md §2.2, §9), both required algorithms. Each positive entry is a REPRODUCIBLE signed line: payload_type, jcs (the envelope without sig, the PAE payload), signed_string (the exact signed bytes), bytes, id and sig follow from the published key and the entry's envelope; line is what a peer sends. Each negative entry is one delivered line with the outcome the production reader must give, derived from the positive named in of by exactly the members named in changed_members. The production reader reads and the writer writes this profile; these vectors check REPRESENTATION (bytes, domain separation, ids, signatures, reader outcome), never authority; whether an act is eligible is the evaluator's, not a vector's.",
 		"status", "SIGNED. Keys are test-only and public: sha256(label) is the secret. Never use them operationally.",
 		"keys", func() canon.Value {
 			a := canon.Array{}
@@ -418,7 +455,7 @@ func ivBuild(t testing.TB) (string, []*ivPos, []*ivNeg) {
 		if n.sigOver != "" {
 			e = ivSet(e, "sig_over", canon.String(n.sigOver))
 		}
-		if n.alg == AlgEd25519 && !n.verifies {
+		if n.alg == AlgEd25519 && !n.verifies && n.step != "" {
 			e = ivSet(e, "ed25519_step", canon.String(n.step))
 			e = ivSet(e, "stock_ed25519_accepts", canon.Bool(n.stock))
 		}
@@ -432,7 +469,26 @@ func ivBuild(t testing.TB) (string, []*ivPos, []*ivNeg) {
 		na = append(na, e)
 	}
 	top = ivSet(ivSet(top, "positive", pa), "negative", na)
+	top = ivSet(top, "edition_ids", ivEditionIDs())
 	return ivPretty(top, "") + "\n", pos, neg
+}
+
+// ivEditionIDs pins the rc/2 edition id (§2.2): one edition body hashed under the v2 edition-body domain, and the same
+// bytes under the v1 domain, which is a different edition. Like the wire-format vectors' edition_ids: signed_string is
+// PAE(edition-body type, JCS(body)), edition_id its sha256.
+func ivEditionIDs() canon.Value {
+	res := ivDigest(0x7e)[len("sha256:"):]
+	body := ivObj("resource", res, "predecessors", []string{res}, "contents",
+		ivObj("controllers", canon.Array{ivObj("key", "ed25519:"+strings.Repeat("3c", 32))}, "rule", ivObj("any_one", true),
+			"members", canon.Array{ivObj("content", ivDigest(0x7a), "role", "segment")}))
+	jcs := string(canon.Encode(body))
+	a := canon.Array{}
+	for _, major := range []int{2, 1} {
+		ss := string(PAE(EditionBodyType(major), []byte(jcs)))
+		a = append(a, ivObj("rc", "rc/"+strconv.Itoa(major), "payload_type", EditionBodyType(major), "body_jcs", jcs,
+			"signed_string", ss, "bytes", len(ss), "edition_id", ID([]byte(ss))))
+	}
+	return a
 }
 
 func ivObj2(ss []string) canon.Value { return ivObj("x", ss).Members["x"] }
@@ -481,6 +537,9 @@ func ivUnhex(t *testing.T, s string) []byte {
 // EIP-191 recovery.
 func ivVerify(t *testing.T, alg, signer, msg, sg string) (ok bool, step string) {
 	t.Helper()
+	if alg != AlgEd25519 && alg != AlgEIP191 || checkSigner(alg, signer) != nil {
+		return false, "" // an alg this reader does not implement, or a signer outside its form: nothing to verify
+	}
 	switch alg {
 	case AlgEd25519:
 		step = sig.VerifyEd25519(ivUnhex(t, strings.TrimPrefix(signer, "ed25519:")), []byte(msg), ivUnhex(t, sg))
@@ -717,7 +776,7 @@ func TestSignedIdentityNegativeVectors(t *testing.T) {
 			if ok != x.SigVerifies {
 				t.Fatalf("signature verifies %v over the verified string, entry says %v", ok, x.SigVerifies)
 			}
-			if x.Alg == AlgEd25519 && !ok {
+			if x.Alg == AlgEd25519 && !ok && x.Ed25519Step != "" {
 				if num := strings.TrimPrefix(strings.SplitN(step, " ", 3)[0]+" "+strings.SplitN(step, " ", 3)[1], "step "); num != x.Ed25519Step {
 					t.Fatalf("refused at step %q, entry says %q", num, x.Ed25519Step)
 				}
@@ -746,8 +805,11 @@ func TestSignedIdentityNegativeVectors(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if !ok || !st.Verified || string(st.Status) != x.Status || st.Why != x.Why || (st.Actor != nil) != x.ActorRead {
+				if ok != st.Verified || x.SigVerifies && !st.Verified || string(st.Status) != x.Status || st.Why != x.Why || (st.Actor != nil) != x.ActorRead {
 					t.Fatalf("identity reader: %+v", st)
+				}
+				if !st.Verified && (x.Status != string(Unsupported) || x.Alg == AlgEd25519 || x.Alg == AlgEIP191 || st.ID == "") {
+					t.Fatalf("an unverified read is only a retained unknown-alg line: %+v", st)
 				}
 			}
 			// the unchanged reader never reads an actor and never reads an rc/2 line as valid
@@ -755,12 +817,12 @@ func TestSignedIdentityNegativeVectors(t *testing.T) {
 			if oerr == nil && (old.Actor != nil || ivStr(env, "rc") == "rc/2" && (old.Status != Unsupported || old.Verified)) {
 				t.Fatalf("unchanged reader: %+v", old)
 			}
-			seen[x.Alg+" "+strings.TrimPrefix(x.Name, x.Chain+"-")]++
+			seen[of.Alg+" "+strings.TrimPrefix(x.Name, x.Chain+"-")]++ // the chain's algorithm: a future-alg entry names its own
 		})
 	}
 	for _, alg := range []string{AlgEd25519, AlgEIP191} {
 		for _, n := range []string{"neg-actor-tampered", "neg-v1-preimage", "neg-relabel-rc2-as-rc1", "neg-relabel-rc1-as-rc2",
-			"neg-rc1-with-actor", "neg-rc2-revoke-key"} {
+			"neg-rc1-with-actor", "neg-rc2-revoke-key", "neg-future-alg-rc1", "neg-future-alg-rc2", "neg-known-alg-future-signer", "neg-grant-future-delegate", "neg-actor-v2", "neg-actor-in-body", "neg-actor-identity-tampered"} {
 			if seen[alg+" "+n] != 1 {
 				t.Errorf("no %s for %s", n, alg)
 			}
@@ -768,5 +830,43 @@ func TestSignedIdentityNegativeVectors(t *testing.T) {
 	}
 	if seen[AlgEd25519+" neg-ed25519-ne1"] != 1 || seen[AlgEd25519+" neg-ed25519-ne7"] != 1 || seen[AlgEd25519+" neg-ed25519-ne11"] != 1 {
 		t.Error("the Ed25519 edge cases are not all delivered as rc/2 lines")
+	}
+}
+
+// TestSignedIdentityEditionIDs: the file's rc/2 edition id follows from the note's formula (§2.2), computed here
+// character by character, and is not the rc/1 domain's id: the same body bytes under the rc/1 domain are
+// a different edition.
+func TestSignedIdentityEditionIDs(t *testing.T) {
+	b, err := os.ReadFile(ivPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	top, err := canon.Parse(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eds, _ := top.(*canon.Object).Members["edition_ids"].(canon.Array)
+	if len(eds) != 2 {
+		t.Fatalf("edition_ids: %d entries, want 2 (rc/2 and its rc/1 twin)", len(eds))
+	}
+	seen := map[string]string{}
+	for _, e := range eds {
+		o := e.(*canon.Object)
+		rc, jcs := ivStr(o, "rc"), ivStr(o, "body_jcs")
+		pt := "application/vnd.research-commons.edition-body.v" + strings.TrimPrefix(rc, "rc/") + "+json"
+		ss := "DSSEv1 " + strconv.Itoa(len(pt)) + " " + pt + " " + strconv.Itoa(len(jcs)) + " " + jcs
+		h := sha256.Sum256([]byte(ss))
+		if ivStr(o, "payload_type") != pt || ivStr(o, "signed_string") != ss || int64(o.Members["bytes"].(canon.Int)) != int64(len(ss)) ||
+			ivStr(o, "edition_id") != hex.EncodeToString(h[:]) {
+			t.Fatalf("%s: edition id entry differs from the formula", rc)
+		}
+		body, err := canon.Parse([]byte(jcs))
+		if err != nil || string(canon.Encode(body)) != jcs {
+			t.Fatalf("%s: body_jcs is not canonical", rc)
+		}
+		seen[rc] = ivStr(o, "edition_id")
+	}
+	if seen["rc/2"] == "" || seen["rc/1"] == "" || seen["rc/2"] == seen["rc/1"] {
+		t.Fatalf("rc/2 and rc/1 edition ids of one body: %v", seen)
 	}
 }

@@ -12,10 +12,10 @@ import (
 )
 
 // This file is the fixed-root identity reader (docs/DESIGN-notes-fixed-root-identity.md): the rc/2 half of the
-// production reader (ReadStored, dual.go). Read, the zero Reader, NewReader and Major are unchanged: Read stays
-// the rc/1-only reader (an rc/2 line an unverified other-major line). The writer signs a statement in rc/2 when it
-// acts for an identity or administers one (WriterMajor, IdentityDraft: write.go), rc/1 otherwise. The profile is
-// still a candidate wire format: nothing here is frozen.
+// production reader (ReadStored, dual.go), active: every view reads rc/2 through it. Read, the zero Reader,
+// NewReader and Major are unchanged: Read stays the rc/1-only reader (an rc/2 line an unverified other-major line).
+// The writer signs a statement in rc/2 when it acts for an identity or administers one (WriterMajor, IdentityDraft:
+// write.go), rc/1 otherwise. The wire format is still a candidate until the 1.0 release: nothing here is frozen.
 
 const (
 	// CandidateMajor is the identity profile's major. The production reader reads it (ReaderMajors) and the writer
@@ -64,7 +64,7 @@ type IdentityReader struct {
 	memo bool
 }
 
-// NewIdentityReader returns the candidate reader. It has no configuration: its rc/2 critical-extension registry
+// NewIdentityReader returns the production identity reader. It has no configuration: its rc/2 critical-extension registry
 // holds exactly x_identity_v1, with its validator (identityExtension).
 func NewIdentityReader() *IdentityReader {
 	r := newIdentityReader(map[string]ExtensionValidator{IdentityCrit: identityExtension})
@@ -206,13 +206,8 @@ func linkageEnvelope(s *Statement, env *canon.Object) error {
 	if s.Alg, err = str(env, "alg"); err != nil {
 		return err
 	}
-	isAddr, isEd := reAddr.MatchString(s.Signer), reEdKey.MatchString(s.Signer)
-	if !isAddr && !isEd {
-		return refusal.Malformed("signer %q is neither 0x + 40 lowercase hex nor ed25519: + 64 lowercase hex", s.Signer)
-	}
-	switch {
-	case s.Alg == AlgEIP191 && !isAddr, s.Alg == AlgEd25519 && !isEd:
-		return refusal.Malformed("alg %s with signer %s", s.Alg, s.Signer)
+	if err := checkSigner(s.Alg, s.Signer); err != nil {
+		return err
 	}
 	seqV, ok := env.Get("seq")
 	if !ok {
@@ -352,7 +347,34 @@ func (r *IdentityReader) interpretCandidate(s *Statement, env *canon.Object) (St
 		// Profile syntax cap, rc/2 only (rc/1 and the default readers are unchanged).
 		return Invalid, "merges has more than " + strconv.Itoa(maxSetEntries) + " entries"
 	}
+	if why := otherActor(env, s.Body); why != "" {
+		return Unsupported, why
+	}
 	return r.candidateBody(s, env)
+}
+
+// actorPrefix is the name space of envelope actor members. x_actor_v1 is the only one this profile reads.
+const actorPrefix = "x_actor_"
+
+// otherActor reports an actor this reader cannot read: an envelope member in the actor name space other than
+// x_actor_v1 (a later actor form), or any actor-named member inside the body (where no actor is ever read). Either
+// reads unsupported, never valid: a line with an actor this reader cannot see must not count as the signer key's
+// own bare-key claim (§2.3: "never a key fallback"). crit names body members, so it cannot guard the envelope's
+// actor; this rule does.
+func otherActor(env, body *canon.Object) string {
+	for _, k := range env.Keys {
+		if strings.HasPrefix(k, actorPrefix) && k != ActorField {
+			return "actor " + k
+		}
+	}
+	if body != nil {
+		for _, k := range body.Keys {
+			if strings.HasPrefix(k, actorPrefix) {
+				return "actor body." + k
+			}
+		}
+	}
+	return ""
 }
 
 // candidateActor reads x_actor_v1 when present. A non-empty result is the reason the statement is Invalid; s.Actor
@@ -473,7 +495,12 @@ func grantBody(s *Statement) (Status, string) {
 		return Invalid, why
 	}
 	kv, ok := d.Get("key")
-	if !ok || key()(kv, "body.delegate.key", &schemaCtx{}) != nil {
+	future := ""
+	if ks, isStr := kv.(canon.String); isStr && futureKey(string(ks)) {
+		// A delegate in a future algorithm's key form: a later reader's to judge. The grant reads unsupported
+		// (its acts unknown), never invalid (its acts definitely denied), once the rest of its body is well formed.
+		future = "key form " + keyScheme(string(ks))
+	} else if !ok || key()(kv, "body.delegate.key", &schemaCtx{}) != nil {
 		return Invalid, "body.delegate.key is not a key"
 	}
 	if string(kv.(canon.String)) == s.Signer {
@@ -500,6 +527,9 @@ func grantBody(s *Statement) (Status, string) {
 		if i > 0 && canon.CompareKeys(string(canon.Encode(ps[i-1])), string(canon.Encode(p))) >= 0 {
 			return Invalid, "body.permissions is not sorted and duplicate-free"
 		}
+	}
+	if future != "" {
+		return Unsupported, future
 	}
 	if unknown != "" {
 		return Unsupported, unknown

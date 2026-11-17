@@ -1,5 +1,5 @@
 {
- "description": "Signed rc/2 test vectors of the CANDIDATE fixed-root identity profile (DESIGN-notes-fixed-root-identity.md §2.2, §9), both required algorithms. Each positive entry is a REPRODUCIBLE signed line: payload_type, jcs (the envelope without sig, the PAE payload), signed_string (the exact signed bytes), bytes, id and sig follow from the published key and the entry's envelope; line is what a peer sends. Each negative entry is one delivered line with the outcome the candidate reader must give, derived from the positive named in of by exactly the members named in changed_members. The profile is NOT active: these vectors check REPRESENTATION (bytes, domain separation, ids, signatures, reader outcome), never authority; whether an act is eligible is the evaluator's, not a vector's.",
+ "description": "Signed rc/2 test vectors of the fixed-root identity profile (DESIGN-notes-fixed-root-identity.md §2.2, §9), both required algorithms. Each positive entry is a REPRODUCIBLE signed line: payload_type, jcs (the envelope without sig, the PAE payload), signed_string (the exact signed bytes), bytes, id and sig follow from the published key and the entry's envelope; line is what a peer sends. Each negative entry is one delivered line with the outcome the production reader must give, derived from the positive named in of by exactly the members named in changed_members. The production reader reads and the writer writes this profile; these vectors check REPRESENTATION (bytes, domain separation, ids, signatures, reader outcome), never authority; whether an act is eligible is the evaluator's, not a vector's.",
  "status": "SIGNED. Keys are test-only and public: sha256(label) is the secret. Never use them operationally.",
  "keys": [
   {
@@ -419,6 +419,30 @@
    }
   },
   {
+   "name": "ed-neg-actor-identity-tampered",
+   "chain": "ed",
+   "title": "x_actor_v1.identity changed after signing",
+   "of": "ed-authored",
+   "alg": "ed25519",
+   "signer": "ed25519:ab2dddca40eb9e0298be48c1d5e8269ac9b18a44d1d6b2b31ec6919eda660a1c",
+   "delivered": "{\"alg\":\"ed25519\",\"body\":{\"content\":{\"digest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"size\":4096},\"type\":\"dataset\",\"x_identity_v1\":{}},\"crit\":[\"x_identity_v1\"],\"kind\":\"authored\",\"prev\":\"64f0f922b572f99f9ab0ee98654b0ef5c6a7e080e9eabb2fec5e20fe858cd12c\",\"rc\":\"rc/2\",\"seq\":1,\"sig\":\"979fb4aca8779989d6084ac1b3cfd3c4f984c7654161349e8f1282026e1b29cb428cf8c380bfd8c7f5c53f80b4c9d68c1e3ac833c1477b0ce3690b6a39ea7b0f\",\"signer\":\"ed25519:ab2dddca40eb9e0298be48c1d5e8269ac9b18a44d1d6b2b31ec6919eda660a1c\",\"ts\":\"2026-11-06T00:00:00Z\",\"x_actor_v1\":{\"grant\":\"4daa025db26cc33e831df86fd43ede65a56bff17e70aff0732e296b4a6315d05\",\"identity\":\"4daa025db26cc33e831df86fd43ede65a56bff17e70aff0732e296b4a6315d05\"}}",
+   "changed_members": [
+    "x_actor_v1"
+   ],
+   "verified_string": "DSSEv1 49 application/vnd.research-commons.authored.v2+json 586 {\"alg\":\"ed25519\",\"body\":{\"content\":{\"digest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"size\":4096},\"type\":\"dataset\",\"x_identity_v1\":{}},\"crit\":[\"x_identity_v1\"],\"kind\":\"authored\",\"prev\":\"64f0f922b572f99f9ab0ee98654b0ef5c6a7e080e9eabb2fec5e20fe858cd12c\",\"rc\":\"rc/2\",\"seq\":1,\"signer\":\"ed25519:ab2dddca40eb9e0298be48c1d5e8269ac9b18a44d1d6b2b31ec6919eda660a1c\",\"ts\":\"2026-11-06T00:00:00Z\",\"x_actor_v1\":{\"grant\":\"4daa025db26cc33e831df86fd43ede65a56bff17e70aff0732e296b4a6315d05\",\"identity\":\"4daa025db26cc33e831df86fd43ede65a56bff17e70aff0732e296b4a6315d05\"}}",
+   "sig": "979fb4aca8779989d6084ac1b3cfd3c4f984c7654161349e8f1282026e1b29cb428cf8c380bfd8c7f5c53f80b4c9d68c1e3ac833c1477b0ce3690b6a39ea7b0f",
+   "sig_verifies": false,
+   "sig_over": "DSSEv1 49 application/vnd.research-commons.authored.v2+json 586 {\"alg\":\"ed25519\",\"body\":{\"content\":{\"digest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"size\":4096},\"type\":\"dataset\",\"x_identity_v1\":{}},\"crit\":[\"x_identity_v1\"],\"kind\":\"authored\",\"prev\":\"64f0f922b572f99f9ab0ee98654b0ef5c6a7e080e9eabb2fec5e20fe858cd12c\",\"rc\":\"rc/2\",\"seq\":1,\"signer\":\"ed25519:ab2dddca40eb9e0298be48c1d5e8269ac9b18a44d1d6b2b31ec6919eda660a1c\",\"ts\":\"2026-11-06T00:00:00Z\",\"x_actor_v1\":{\"grant\":\"4daa025db26cc33e831df86fd43ede65a56bff17e70aff0732e296b4a6315d05\",\"identity\":\"6f24bd92cf27318bbc6bd6f881f130b611705e54dbdd11a83cd7de3a8ab351e2\"}}",
+   "ed25519_step": "4",
+   "stock_ed25519_accepts": false,
+   "outcome": {
+    "result": "refused",
+    "class": "intrinsic",
+    "reason": "bad signature",
+    "detail_has": "ed25519 step 4"
+   }
+  },
+  {
    "name": "ed-neg-actor-stripped",
    "chain": "ed",
    "title": "x_actor_v1 removed after signing (an act for an identity cannot be turned into a bare-key act)",
@@ -584,6 +608,139 @@
    }
   },
   {
+   "name": "ed-neg-actor-v2",
+   "chain": "ed",
+   "title": "x_actor_v1 renamed x_actor_v2 and re-signed (an actor form this reader does not know: unsupported, never a bare-key claim)",
+   "of": "ed-authored",
+   "alg": "ed25519",
+   "signer": "ed25519:ab2dddca40eb9e0298be48c1d5e8269ac9b18a44d1d6b2b31ec6919eda660a1c",
+   "delivered": "{\"alg\":\"ed25519\",\"body\":{\"content\":{\"digest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"size\":4096},\"type\":\"dataset\",\"x_identity_v1\":{}},\"crit\":[\"x_identity_v1\"],\"kind\":\"authored\",\"prev\":\"64f0f922b572f99f9ab0ee98654b0ef5c6a7e080e9eabb2fec5e20fe858cd12c\",\"rc\":\"rc/2\",\"seq\":1,\"sig\":\"30a4a8a5e8e629b2b1805dab1c5e7f6a49cfc5c24f2e25e10e374d6d189343ea4b3d22e55792e3df5e600a3ab07456767e925f8c3bae1ab2196e55bb0334cb0e\",\"signer\":\"ed25519:ab2dddca40eb9e0298be48c1d5e8269ac9b18a44d1d6b2b31ec6919eda660a1c\",\"ts\":\"2026-11-06T00:00:00Z\",\"x_actor_v2\":{\"grant\":\"4daa025db26cc33e831df86fd43ede65a56bff17e70aff0732e296b4a6315d05\",\"identity\":\"6f24bd92cf27318bbc6bd6f881f130b611705e54dbdd11a83cd7de3a8ab351e2\"}}",
+   "changed_members": [
+    "sig",
+    "x_actor_v1",
+    "x_actor_v2"
+   ],
+   "verified_string": "DSSEv1 49 application/vnd.research-commons.authored.v2+json 586 {\"alg\":\"ed25519\",\"body\":{\"content\":{\"digest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"size\":4096},\"type\":\"dataset\",\"x_identity_v1\":{}},\"crit\":[\"x_identity_v1\"],\"kind\":\"authored\",\"prev\":\"64f0f922b572f99f9ab0ee98654b0ef5c6a7e080e9eabb2fec5e20fe858cd12c\",\"rc\":\"rc/2\",\"seq\":1,\"signer\":\"ed25519:ab2dddca40eb9e0298be48c1d5e8269ac9b18a44d1d6b2b31ec6919eda660a1c\",\"ts\":\"2026-11-06T00:00:00Z\",\"x_actor_v2\":{\"grant\":\"4daa025db26cc33e831df86fd43ede65a56bff17e70aff0732e296b4a6315d05\",\"identity\":\"6f24bd92cf27318bbc6bd6f881f130b611705e54dbdd11a83cd7de3a8ab351e2\"}}",
+   "sig": "30a4a8a5e8e629b2b1805dab1c5e7f6a49cfc5c24f2e25e10e374d6d189343ea4b3d22e55792e3df5e600a3ab07456767e925f8c3bae1ab2196e55bb0334cb0e",
+   "sig_verifies": true,
+   "outcome": {
+    "result": "read",
+    "status": "unsupported",
+    "why": "actor x_actor_v2",
+    "actor_read": false
+   }
+  },
+  {
+   "name": "ed-neg-actor-in-body",
+   "chain": "ed",
+   "title": "x_actor_v1 moved into the body and re-signed (no actor is read there: unsupported, never a bare-key claim)",
+   "of": "ed-authored",
+   "alg": "ed25519",
+   "signer": "ed25519:ab2dddca40eb9e0298be48c1d5e8269ac9b18a44d1d6b2b31ec6919eda660a1c",
+   "delivered": "{\"alg\":\"ed25519\",\"body\":{\"content\":{\"digest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"size\":4096},\"type\":\"dataset\",\"x_actor_v1\":{\"grant\":\"4daa025db26cc33e831df86fd43ede65a56bff17e70aff0732e296b4a6315d05\",\"identity\":\"6f24bd92cf27318bbc6bd6f881f130b611705e54dbdd11a83cd7de3a8ab351e2\"},\"x_identity_v1\":{}},\"crit\":[\"x_identity_v1\"],\"kind\":\"authored\",\"prev\":\"64f0f922b572f99f9ab0ee98654b0ef5c6a7e080e9eabb2fec5e20fe858cd12c\",\"rc\":\"rc/2\",\"seq\":1,\"sig\":\"c25de8eb3437e610e5bf26bbb8d50dce4bdb7a07759170dc6dc35833f37aabc80e60b2bdba692b284472a364365022c8d570756c2626fad84d479378ce05ac07\",\"signer\":\"ed25519:ab2dddca40eb9e0298be48c1d5e8269ac9b18a44d1d6b2b31ec6919eda660a1c\",\"ts\":\"2026-11-06T00:00:00Z\"}",
+   "changed_members": [
+    "body",
+    "sig",
+    "x_actor_v1"
+   ],
+   "verified_string": "DSSEv1 49 application/vnd.research-commons.authored.v2+json 586 {\"alg\":\"ed25519\",\"body\":{\"content\":{\"digest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"size\":4096},\"type\":\"dataset\",\"x_actor_v1\":{\"grant\":\"4daa025db26cc33e831df86fd43ede65a56bff17e70aff0732e296b4a6315d05\",\"identity\":\"6f24bd92cf27318bbc6bd6f881f130b611705e54dbdd11a83cd7de3a8ab351e2\"},\"x_identity_v1\":{}},\"crit\":[\"x_identity_v1\"],\"kind\":\"authored\",\"prev\":\"64f0f922b572f99f9ab0ee98654b0ef5c6a7e080e9eabb2fec5e20fe858cd12c\",\"rc\":\"rc/2\",\"seq\":1,\"signer\":\"ed25519:ab2dddca40eb9e0298be48c1d5e8269ac9b18a44d1d6b2b31ec6919eda660a1c\",\"ts\":\"2026-11-06T00:00:00Z\"}",
+   "sig": "c25de8eb3437e610e5bf26bbb8d50dce4bdb7a07759170dc6dc35833f37aabc80e60b2bdba692b284472a364365022c8d570756c2626fad84d479378ce05ac07",
+   "sig_verifies": true,
+   "outcome": {
+    "result": "read",
+    "status": "unsupported",
+    "why": "actor body.x_actor_v1",
+    "actor_read": false
+   }
+  },
+  {
+   "name": "ed-neg-grant-future-delegate",
+   "chain": "ed",
+   "title": "identity_grant naming a delegate key in a future algorithm's form (correctly signed; unsupported, not invalid: a later reader may accept its acts)",
+   "of": "ed-grant",
+   "alg": "ed25519",
+   "signer": "ed25519:7803013dc64b2a56e43038545e7bcda9a3b7e51659bd3ed3a14061b499c96e11",
+   "delivered": "{\"alg\":\"ed25519\",\"body\":{\"delegate\":{\"inception\":\"64f0f922b572f99f9ab0ee98654b0ef5c6a7e080e9eabb2fec5e20fe858cd12c\",\"key\":\"ml-dsa-65:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a\"},\"identity\":\"6f24bd92cf27318bbc6bd6f881f130b611705e54dbdd11a83cd7de3a8ab351e2\",\"permissions\":[{\"amend\":true,\"kind\":\"authored\",\"targets\":{\"any_content\":true}}],\"x_identity_v1\":{}},\"crit\":[\"x_identity_v1\"],\"kind\":\"identity_grant\",\"prev\":\"6f24bd92cf27318bbc6bd6f881f130b611705e54dbdd11a83cd7de3a8ab351e2\",\"rc\":\"rc/2\",\"seq\":1,\"sig\":\"e243a627cc828d5ff16826dbb17b3c6ad711b587396e735c98f0240b51d337f75edef5ceb10faed13f1e6fa5941775517c128e09f65c5dfd57e1b283b82a9801\",\"signer\":\"ed25519:7803013dc64b2a56e43038545e7bcda9a3b7e51659bd3ed3a14061b499c96e11\",\"ts\":\"2026-11-06T00:00:00Z\"}",
+   "changed_members": [
+    "body",
+    "sig"
+   ],
+   "verified_string": "DSSEv1 55 application/vnd.research-commons.identity_grant.v2+json 649 {\"alg\":\"ed25519\",\"body\":{\"delegate\":{\"inception\":\"64f0f922b572f99f9ab0ee98654b0ef5c6a7e080e9eabb2fec5e20fe858cd12c\",\"key\":\"ml-dsa-65:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a\"},\"identity\":\"6f24bd92cf27318bbc6bd6f881f130b611705e54dbdd11a83cd7de3a8ab351e2\",\"permissions\":[{\"amend\":true,\"kind\":\"authored\",\"targets\":{\"any_content\":true}}],\"x_identity_v1\":{}},\"crit\":[\"x_identity_v1\"],\"kind\":\"identity_grant\",\"prev\":\"6f24bd92cf27318bbc6bd6f881f130b611705e54dbdd11a83cd7de3a8ab351e2\",\"rc\":\"rc/2\",\"seq\":1,\"signer\":\"ed25519:7803013dc64b2a56e43038545e7bcda9a3b7e51659bd3ed3a14061b499c96e11\",\"ts\":\"2026-11-06T00:00:00Z\"}",
+   "sig": "e243a627cc828d5ff16826dbb17b3c6ad711b587396e735c98f0240b51d337f75edef5ceb10faed13f1e6fa5941775517c128e09f65c5dfd57e1b283b82a9801",
+   "sig_verifies": true,
+   "outcome": {
+    "result": "read",
+    "status": "unsupported",
+    "why": "key form ml-dsa-65",
+    "actor_read": false
+   }
+  },
+  {
+   "name": "ed-neg-future-alg-rc1",
+   "chain": "ed",
+   "title": "rc/1 line under a future alg with that algorithm's own key form (retained unsupported, not malformed)",
+   "of": "ed-worker-genesis",
+   "alg": "ml-dsa-65",
+   "signer": "ml-dsa-65:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+   "delivered": "{\"alg\":\"ml-dsa-65\",\"body\":{\"content\":{\"digest\":\"sha256:9999999999999999999999999999999999999999999999999999999999999999\",\"size\":4096},\"type\":\"dataset\"},\"kind\":\"authored\",\"prev\":null,\"rc\":\"rc/1\",\"seq\":0,\"sig\":\"d201a29fb79b69c4eaef2fed8631ee11e947e2b38b7a04682a69ad2c9099f22954d201f24eaaa50515f36ea708acaf4b78b77c80926bbe5de120d9f076414d06\",\"signer\":\"ml-dsa-65:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a\",\"ts\":\"2026-11-06T00:00:00Z\"}",
+   "changed_members": [
+    "alg",
+    "signer"
+   ],
+   "verified_string": "DSSEv1 49 application/vnd.research-commons.authored.v1+json 332 {\"alg\":\"ml-dsa-65\",\"body\":{\"content\":{\"digest\":\"sha256:9999999999999999999999999999999999999999999999999999999999999999\",\"size\":4096},\"type\":\"dataset\"},\"kind\":\"authored\",\"prev\":null,\"rc\":\"rc/1\",\"seq\":0,\"signer\":\"ml-dsa-65:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a\",\"ts\":\"2026-11-06T00:00:00Z\"}",
+   "sig": "d201a29fb79b69c4eaef2fed8631ee11e947e2b38b7a04682a69ad2c9099f22954d201f24eaaa50515f36ea708acaf4b78b77c80926bbe5de120d9f076414d06",
+   "sig_verifies": false,
+   "outcome": {
+    "result": "read",
+    "status": "unsupported",
+    "why": "alg ml-dsa-65",
+    "actor_read": false
+   }
+  },
+  {
+   "name": "ed-neg-future-alg-rc2",
+   "chain": "ed",
+   "title": "rc/2 identity act under a future alg with that algorithm's own key form (retained unsupported, not malformed)",
+   "of": "ed-authored",
+   "alg": "ml-dsa-65",
+   "signer": "ml-dsa-65:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+   "delivered": "{\"alg\":\"ml-dsa-65\",\"body\":{\"content\":{\"digest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"size\":4096},\"type\":\"dataset\",\"x_identity_v1\":{}},\"crit\":[\"x_identity_v1\"],\"kind\":\"authored\",\"prev\":\"64f0f922b572f99f9ab0ee98654b0ef5c6a7e080e9eabb2fec5e20fe858cd12c\",\"rc\":\"rc/2\",\"seq\":1,\"sig\":\"979fb4aca8779989d6084ac1b3cfd3c4f984c7654161349e8f1282026e1b29cb428cf8c380bfd8c7f5c53f80b4c9d68c1e3ac833c1477b0ce3690b6a39ea7b0f\",\"signer\":\"ml-dsa-65:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a\",\"ts\":\"2026-11-06T00:00:00Z\",\"x_actor_v1\":{\"grant\":\"4daa025db26cc33e831df86fd43ede65a56bff17e70aff0732e296b4a6315d05\",\"identity\":\"6f24bd92cf27318bbc6bd6f881f130b611705e54dbdd11a83cd7de3a8ab351e2\"}}",
+   "changed_members": [
+    "alg",
+    "signer"
+   ],
+   "verified_string": "DSSEv1 49 application/vnd.research-commons.authored.v2+json 606 {\"alg\":\"ml-dsa-65\",\"body\":{\"content\":{\"digest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"size\":4096},\"type\":\"dataset\",\"x_identity_v1\":{}},\"crit\":[\"x_identity_v1\"],\"kind\":\"authored\",\"prev\":\"64f0f922b572f99f9ab0ee98654b0ef5c6a7e080e9eabb2fec5e20fe858cd12c\",\"rc\":\"rc/2\",\"seq\":1,\"signer\":\"ml-dsa-65:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a\",\"ts\":\"2026-11-06T00:00:00Z\",\"x_actor_v1\":{\"grant\":\"4daa025db26cc33e831df86fd43ede65a56bff17e70aff0732e296b4a6315d05\",\"identity\":\"6f24bd92cf27318bbc6bd6f881f130b611705e54dbdd11a83cd7de3a8ab351e2\"}}",
+   "sig": "979fb4aca8779989d6084ac1b3cfd3c4f984c7654161349e8f1282026e1b29cb428cf8c380bfd8c7f5c53f80b4c9d68c1e3ac833c1477b0ce3690b6a39ea7b0f",
+   "sig_verifies": false,
+   "outcome": {
+    "result": "read",
+    "status": "unsupported",
+    "why": "alg ml-dsa-65",
+    "actor_read": false
+   }
+  },
+  {
+   "name": "ed-neg-known-alg-future-signer",
+   "chain": "ed",
+   "title": "an implemented alg with a signer outside its key form (a future algorithm's) stays malformed",
+   "of": "ed-authored",
+   "alg": "ed25519",
+   "signer": "ml-dsa-65:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+   "delivered": "{\"alg\":\"ed25519\",\"body\":{\"content\":{\"digest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"size\":4096},\"type\":\"dataset\",\"x_identity_v1\":{}},\"crit\":[\"x_identity_v1\"],\"kind\":\"authored\",\"prev\":\"64f0f922b572f99f9ab0ee98654b0ef5c6a7e080e9eabb2fec5e20fe858cd12c\",\"rc\":\"rc/2\",\"seq\":1,\"sig\":\"979fb4aca8779989d6084ac1b3cfd3c4f984c7654161349e8f1282026e1b29cb428cf8c380bfd8c7f5c53f80b4c9d68c1e3ac833c1477b0ce3690b6a39ea7b0f\",\"signer\":\"ml-dsa-65:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a\",\"ts\":\"2026-11-06T00:00:00Z\",\"x_actor_v1\":{\"grant\":\"4daa025db26cc33e831df86fd43ede65a56bff17e70aff0732e296b4a6315d05\",\"identity\":\"6f24bd92cf27318bbc6bd6f881f130b611705e54dbdd11a83cd7de3a8ab351e2\"}}",
+   "changed_members": [
+    "signer"
+   ],
+   "verified_string": "DSSEv1 49 application/vnd.research-commons.authored.v2+json 604 {\"alg\":\"ed25519\",\"body\":{\"content\":{\"digest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"size\":4096},\"type\":\"dataset\",\"x_identity_v1\":{}},\"crit\":[\"x_identity_v1\"],\"kind\":\"authored\",\"prev\":\"64f0f922b572f99f9ab0ee98654b0ef5c6a7e080e9eabb2fec5e20fe858cd12c\",\"rc\":\"rc/2\",\"seq\":1,\"signer\":\"ml-dsa-65:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a\",\"ts\":\"2026-11-06T00:00:00Z\",\"x_actor_v1\":{\"grant\":\"4daa025db26cc33e831df86fd43ede65a56bff17e70aff0732e296b4a6315d05\",\"identity\":\"6f24bd92cf27318bbc6bd6f881f130b611705e54dbdd11a83cd7de3a8ab351e2\"}}",
+   "sig": "979fb4aca8779989d6084ac1b3cfd3c4f984c7654161349e8f1282026e1b29cb428cf8c380bfd8c7f5c53f80b4c9d68c1e3ac833c1477b0ce3690b6a39ea7b0f",
+   "sig_verifies": false,
+   "outcome": {
+    "result": "refused",
+    "class": "intrinsic",
+    "reason": "malformed statement",
+    "detail_has": "neither"
+   }
+  },
+  {
    "name": "ed-neg-ed25519-ne1",
    "chain": "ed",
    "title": "wire-format Ed25519 case NE1 delivered as an rc/2 identity line",
@@ -695,6 +852,28 @@
     "x_actor_v1"
    ],
    "verified_string": "DSSEv1 49 application/vnd.research-commons.authored.v2+json 565 {\"alg\":\"eip191-secp256k1\",\"body\":{\"content\":{\"digest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"size\":4096},\"type\":\"dataset\",\"x_identity_v1\":{}},\"crit\":[\"x_identity_v1\"],\"kind\":\"authored\",\"prev\":\"3844ef7b3ee780bc3e4960eb3917f286be0b5dd954c49b5d13c026924770180e\",\"rc\":\"rc/2\",\"seq\":1,\"signer\":\"0xdd6a9c2f6b7b1989343d800912dce4af5e5a3682\",\"ts\":\"2026-11-06T00:00:00Z\",\"x_actor_v1\":{\"grant\":\"f8907295c8ed40f2a95f895e94c571f1c0277393950fdbe5a025f4e50097af10\",\"identity\":\"f8907295c8ed40f2a95f895e94c571f1c0277393950fdbe5a025f4e50097af10\"}}",
+   "sig": "0x5e353fe3bc013ddbe1a1de60733536b32b9c5363bd907a61768189b30ee1554f218075a5667c8f39f467280bb705529dbf5ad721f0358c67704c76416acfca701b",
+   "sig_verifies": false,
+   "sig_over": "DSSEv1 49 application/vnd.research-commons.authored.v2+json 565 {\"alg\":\"eip191-secp256k1\",\"body\":{\"content\":{\"digest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"size\":4096},\"type\":\"dataset\",\"x_identity_v1\":{}},\"crit\":[\"x_identity_v1\"],\"kind\":\"authored\",\"prev\":\"3844ef7b3ee780bc3e4960eb3917f286be0b5dd954c49b5d13c026924770180e\",\"rc\":\"rc/2\",\"seq\":1,\"signer\":\"0xdd6a9c2f6b7b1989343d800912dce4af5e5a3682\",\"ts\":\"2026-11-06T00:00:00Z\",\"x_actor_v1\":{\"grant\":\"86811c45c1bc2d21616a9e594ffc0adae28c72e299ec9b7cc7ed6e85384bc9aa\",\"identity\":\"f8907295c8ed40f2a95f895e94c571f1c0277393950fdbe5a025f4e50097af10\"}}",
+   "outcome": {
+    "result": "refused",
+    "class": "intrinsic",
+    "reason": "bad signature",
+    "detail_has": "does not recover 0xdd6a9c2f6b7b1989343d800912dce4af5e5a3682"
+   }
+  },
+  {
+   "name": "eip-neg-actor-identity-tampered",
+   "chain": "eip",
+   "title": "x_actor_v1.identity changed after signing",
+   "of": "eip-authored",
+   "alg": "eip191-secp256k1",
+   "signer": "0xdd6a9c2f6b7b1989343d800912dce4af5e5a3682",
+   "delivered": "{\"alg\":\"eip191-secp256k1\",\"body\":{\"content\":{\"digest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"size\":4096},\"type\":\"dataset\",\"x_identity_v1\":{}},\"crit\":[\"x_identity_v1\"],\"kind\":\"authored\",\"prev\":\"3844ef7b3ee780bc3e4960eb3917f286be0b5dd954c49b5d13c026924770180e\",\"rc\":\"rc/2\",\"seq\":1,\"sig\":\"0x5e353fe3bc013ddbe1a1de60733536b32b9c5363bd907a61768189b30ee1554f218075a5667c8f39f467280bb705529dbf5ad721f0358c67704c76416acfca701b\",\"signer\":\"0xdd6a9c2f6b7b1989343d800912dce4af5e5a3682\",\"ts\":\"2026-11-06T00:00:00Z\",\"x_actor_v1\":{\"grant\":\"86811c45c1bc2d21616a9e594ffc0adae28c72e299ec9b7cc7ed6e85384bc9aa\",\"identity\":\"86811c45c1bc2d21616a9e594ffc0adae28c72e299ec9b7cc7ed6e85384bc9aa\"}}",
+   "changed_members": [
+    "x_actor_v1"
+   ],
+   "verified_string": "DSSEv1 49 application/vnd.research-commons.authored.v2+json 565 {\"alg\":\"eip191-secp256k1\",\"body\":{\"content\":{\"digest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"size\":4096},\"type\":\"dataset\",\"x_identity_v1\":{}},\"crit\":[\"x_identity_v1\"],\"kind\":\"authored\",\"prev\":\"3844ef7b3ee780bc3e4960eb3917f286be0b5dd954c49b5d13c026924770180e\",\"rc\":\"rc/2\",\"seq\":1,\"signer\":\"0xdd6a9c2f6b7b1989343d800912dce4af5e5a3682\",\"ts\":\"2026-11-06T00:00:00Z\",\"x_actor_v1\":{\"grant\":\"86811c45c1bc2d21616a9e594ffc0adae28c72e299ec9b7cc7ed6e85384bc9aa\",\"identity\":\"86811c45c1bc2d21616a9e594ffc0adae28c72e299ec9b7cc7ed6e85384bc9aa\"}}",
    "sig": "0x5e353fe3bc013ddbe1a1de60733536b32b9c5363bd907a61768189b30ee1554f218075a5667c8f39f467280bb705529dbf5ad721f0358c67704c76416acfca701b",
    "sig_verifies": false,
    "sig_over": "DSSEv1 49 application/vnd.research-commons.authored.v2+json 565 {\"alg\":\"eip191-secp256k1\",\"body\":{\"content\":{\"digest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"size\":4096},\"type\":\"dataset\",\"x_identity_v1\":{}},\"crit\":[\"x_identity_v1\"],\"kind\":\"authored\",\"prev\":\"3844ef7b3ee780bc3e4960eb3917f286be0b5dd954c49b5d13c026924770180e\",\"rc\":\"rc/2\",\"seq\":1,\"signer\":\"0xdd6a9c2f6b7b1989343d800912dce4af5e5a3682\",\"ts\":\"2026-11-06T00:00:00Z\",\"x_actor_v1\":{\"grant\":\"86811c45c1bc2d21616a9e594ffc0adae28c72e299ec9b7cc7ed6e85384bc9aa\",\"identity\":\"f8907295c8ed40f2a95f895e94c571f1c0277393950fdbe5a025f4e50097af10\"}}",
@@ -861,6 +1040,157 @@
     "why": "raw key events stay rc/1 in this profile",
     "actor_read": false
    }
+  },
+  {
+   "name": "eip-neg-actor-v2",
+   "chain": "eip",
+   "title": "x_actor_v1 renamed x_actor_v2 and re-signed (an actor form this reader does not know: unsupported, never a bare-key claim)",
+   "of": "eip-authored",
+   "alg": "eip191-secp256k1",
+   "signer": "0xdd6a9c2f6b7b1989343d800912dce4af5e5a3682",
+   "delivered": "{\"alg\":\"eip191-secp256k1\",\"body\":{\"content\":{\"digest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"size\":4096},\"type\":\"dataset\",\"x_identity_v1\":{}},\"crit\":[\"x_identity_v1\"],\"kind\":\"authored\",\"prev\":\"3844ef7b3ee780bc3e4960eb3917f286be0b5dd954c49b5d13c026924770180e\",\"rc\":\"rc/2\",\"seq\":1,\"sig\":\"0x4271c05bc6a83947a67c5bea912644a823eae39f13655078f457b1ff5b5103bb5f212352d6ae56b1544910de05258f04cfec557fa51199222b8b306cfeb806fd1b\",\"signer\":\"0xdd6a9c2f6b7b1989343d800912dce4af5e5a3682\",\"ts\":\"2026-11-06T00:00:00Z\",\"x_actor_v2\":{\"grant\":\"86811c45c1bc2d21616a9e594ffc0adae28c72e299ec9b7cc7ed6e85384bc9aa\",\"identity\":\"f8907295c8ed40f2a95f895e94c571f1c0277393950fdbe5a025f4e50097af10\"}}",
+   "changed_members": [
+    "sig",
+    "x_actor_v1",
+    "x_actor_v2"
+   ],
+   "verified_string": "DSSEv1 49 application/vnd.research-commons.authored.v2+json 565 {\"alg\":\"eip191-secp256k1\",\"body\":{\"content\":{\"digest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"size\":4096},\"type\":\"dataset\",\"x_identity_v1\":{}},\"crit\":[\"x_identity_v1\"],\"kind\":\"authored\",\"prev\":\"3844ef7b3ee780bc3e4960eb3917f286be0b5dd954c49b5d13c026924770180e\",\"rc\":\"rc/2\",\"seq\":1,\"signer\":\"0xdd6a9c2f6b7b1989343d800912dce4af5e5a3682\",\"ts\":\"2026-11-06T00:00:00Z\",\"x_actor_v2\":{\"grant\":\"86811c45c1bc2d21616a9e594ffc0adae28c72e299ec9b7cc7ed6e85384bc9aa\",\"identity\":\"f8907295c8ed40f2a95f895e94c571f1c0277393950fdbe5a025f4e50097af10\"}}",
+   "sig": "0x4271c05bc6a83947a67c5bea912644a823eae39f13655078f457b1ff5b5103bb5f212352d6ae56b1544910de05258f04cfec557fa51199222b8b306cfeb806fd1b",
+   "sig_verifies": true,
+   "outcome": {
+    "result": "read",
+    "status": "unsupported",
+    "why": "actor x_actor_v2",
+    "actor_read": false
+   }
+  },
+  {
+   "name": "eip-neg-actor-in-body",
+   "chain": "eip",
+   "title": "x_actor_v1 moved into the body and re-signed (no actor is read there: unsupported, never a bare-key claim)",
+   "of": "eip-authored",
+   "alg": "eip191-secp256k1",
+   "signer": "0xdd6a9c2f6b7b1989343d800912dce4af5e5a3682",
+   "delivered": "{\"alg\":\"eip191-secp256k1\",\"body\":{\"content\":{\"digest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"size\":4096},\"type\":\"dataset\",\"x_actor_v1\":{\"grant\":\"86811c45c1bc2d21616a9e594ffc0adae28c72e299ec9b7cc7ed6e85384bc9aa\",\"identity\":\"f8907295c8ed40f2a95f895e94c571f1c0277393950fdbe5a025f4e50097af10\"},\"x_identity_v1\":{}},\"crit\":[\"x_identity_v1\"],\"kind\":\"authored\",\"prev\":\"3844ef7b3ee780bc3e4960eb3917f286be0b5dd954c49b5d13c026924770180e\",\"rc\":\"rc/2\",\"seq\":1,\"sig\":\"0x662f0dd1f5feddb77c91d45a0c4b44d19bf97b5442b2035d51f997ae328af5b57673c368cd87be5e845ee98e7ea74a02b6da1df66725b1c1e8bc8d39b58d84f01c\",\"signer\":\"0xdd6a9c2f6b7b1989343d800912dce4af5e5a3682\",\"ts\":\"2026-11-06T00:00:00Z\"}",
+   "changed_members": [
+    "body",
+    "sig",
+    "x_actor_v1"
+   ],
+   "verified_string": "DSSEv1 49 application/vnd.research-commons.authored.v2+json 565 {\"alg\":\"eip191-secp256k1\",\"body\":{\"content\":{\"digest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"size\":4096},\"type\":\"dataset\",\"x_actor_v1\":{\"grant\":\"86811c45c1bc2d21616a9e594ffc0adae28c72e299ec9b7cc7ed6e85384bc9aa\",\"identity\":\"f8907295c8ed40f2a95f895e94c571f1c0277393950fdbe5a025f4e50097af10\"},\"x_identity_v1\":{}},\"crit\":[\"x_identity_v1\"],\"kind\":\"authored\",\"prev\":\"3844ef7b3ee780bc3e4960eb3917f286be0b5dd954c49b5d13c026924770180e\",\"rc\":\"rc/2\",\"seq\":1,\"signer\":\"0xdd6a9c2f6b7b1989343d800912dce4af5e5a3682\",\"ts\":\"2026-11-06T00:00:00Z\"}",
+   "sig": "0x662f0dd1f5feddb77c91d45a0c4b44d19bf97b5442b2035d51f997ae328af5b57673c368cd87be5e845ee98e7ea74a02b6da1df66725b1c1e8bc8d39b58d84f01c",
+   "sig_verifies": true,
+   "outcome": {
+    "result": "read",
+    "status": "unsupported",
+    "why": "actor body.x_actor_v1",
+    "actor_read": false
+   }
+  },
+  {
+   "name": "eip-neg-grant-future-delegate",
+   "chain": "eip",
+   "title": "identity_grant naming a delegate key in a future algorithm's form (correctly signed; unsupported, not invalid: a later reader may accept its acts)",
+   "of": "eip-grant",
+   "alg": "eip191-secp256k1",
+   "signer": "0x4586abc8188dc0503f69a905d26cbd4abeacb838",
+   "delivered": "{\"alg\":\"eip191-secp256k1\",\"body\":{\"delegate\":{\"inception\":\"3844ef7b3ee780bc3e4960eb3917f286be0b5dd954c49b5d13c026924770180e\",\"key\":\"ml-dsa-65:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a\"},\"identity\":\"f8907295c8ed40f2a95f895e94c571f1c0277393950fdbe5a025f4e50097af10\",\"permissions\":[{\"amend\":true,\"kind\":\"authored\",\"targets\":{\"any_content\":true}}],\"x_identity_v1\":{}},\"crit\":[\"x_identity_v1\"],\"kind\":\"identity_grant\",\"prev\":\"f8907295c8ed40f2a95f895e94c571f1c0277393950fdbe5a025f4e50097af10\",\"rc\":\"rc/2\",\"seq\":1,\"sig\":\"0xf1137321daa2153531ae8cd63028644d907b606d5e0b811cf686ec17cd43ab4d158ed232c48e6b563c2711796c460025a23c72dfbd67e1d1c137b1f590dba7a71c\",\"signer\":\"0x4586abc8188dc0503f69a905d26cbd4abeacb838\",\"ts\":\"2026-11-06T00:00:00Z\"}",
+   "changed_members": [
+    "body",
+    "sig"
+   ],
+   "verified_string": "DSSEv1 55 application/vnd.research-commons.identity_grant.v2+json 628 {\"alg\":\"eip191-secp256k1\",\"body\":{\"delegate\":{\"inception\":\"3844ef7b3ee780bc3e4960eb3917f286be0b5dd954c49b5d13c026924770180e\",\"key\":\"ml-dsa-65:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a\"},\"identity\":\"f8907295c8ed40f2a95f895e94c571f1c0277393950fdbe5a025f4e50097af10\",\"permissions\":[{\"amend\":true,\"kind\":\"authored\",\"targets\":{\"any_content\":true}}],\"x_identity_v1\":{}},\"crit\":[\"x_identity_v1\"],\"kind\":\"identity_grant\",\"prev\":\"f8907295c8ed40f2a95f895e94c571f1c0277393950fdbe5a025f4e50097af10\",\"rc\":\"rc/2\",\"seq\":1,\"signer\":\"0x4586abc8188dc0503f69a905d26cbd4abeacb838\",\"ts\":\"2026-11-06T00:00:00Z\"}",
+   "sig": "0xf1137321daa2153531ae8cd63028644d907b606d5e0b811cf686ec17cd43ab4d158ed232c48e6b563c2711796c460025a23c72dfbd67e1d1c137b1f590dba7a71c",
+   "sig_verifies": true,
+   "outcome": {
+    "result": "read",
+    "status": "unsupported",
+    "why": "key form ml-dsa-65",
+    "actor_read": false
+   }
+  },
+  {
+   "name": "eip-neg-future-alg-rc1",
+   "chain": "eip",
+   "title": "rc/1 line under a future alg with that algorithm's own key form (retained unsupported, not malformed)",
+   "of": "eip-worker-genesis",
+   "alg": "ml-dsa-65",
+   "signer": "ml-dsa-65:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+   "delivered": "{\"alg\":\"ml-dsa-65\",\"body\":{\"content\":{\"digest\":\"sha256:9999999999999999999999999999999999999999999999999999999999999999\",\"size\":4096},\"type\":\"dataset\"},\"kind\":\"authored\",\"prev\":null,\"rc\":\"rc/1\",\"seq\":0,\"sig\":\"0x5281d6af29cee03dfad5813fcc6acf5760d482030b67670b40ce3a218a12cdd97c826c8bff7fbedfcde3775a3a08bbf05bfac59deea5b5513e1d2b054033426a1b\",\"signer\":\"ml-dsa-65:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a\",\"ts\":\"2026-11-06T00:00:00Z\"}",
+   "changed_members": [
+    "alg",
+    "signer"
+   ],
+   "verified_string": "DSSEv1 49 application/vnd.research-commons.authored.v1+json 332 {\"alg\":\"ml-dsa-65\",\"body\":{\"content\":{\"digest\":\"sha256:9999999999999999999999999999999999999999999999999999999999999999\",\"size\":4096},\"type\":\"dataset\"},\"kind\":\"authored\",\"prev\":null,\"rc\":\"rc/1\",\"seq\":0,\"signer\":\"ml-dsa-65:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a\",\"ts\":\"2026-11-06T00:00:00Z\"}",
+   "sig": "0x5281d6af29cee03dfad5813fcc6acf5760d482030b67670b40ce3a218a12cdd97c826c8bff7fbedfcde3775a3a08bbf05bfac59deea5b5513e1d2b054033426a1b",
+   "sig_verifies": false,
+   "outcome": {
+    "result": "read",
+    "status": "unsupported",
+    "why": "alg ml-dsa-65",
+    "actor_read": false
+   }
+  },
+  {
+   "name": "eip-neg-future-alg-rc2",
+   "chain": "eip",
+   "title": "rc/2 identity act under a future alg with that algorithm's own key form (retained unsupported, not malformed)",
+   "of": "eip-authored",
+   "alg": "ml-dsa-65",
+   "signer": "ml-dsa-65:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+   "delivered": "{\"alg\":\"ml-dsa-65\",\"body\":{\"content\":{\"digest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"size\":4096},\"type\":\"dataset\",\"x_identity_v1\":{}},\"crit\":[\"x_identity_v1\"],\"kind\":\"authored\",\"prev\":\"3844ef7b3ee780bc3e4960eb3917f286be0b5dd954c49b5d13c026924770180e\",\"rc\":\"rc/2\",\"seq\":1,\"sig\":\"0x5e353fe3bc013ddbe1a1de60733536b32b9c5363bd907a61768189b30ee1554f218075a5667c8f39f467280bb705529dbf5ad721f0358c67704c76416acfca701b\",\"signer\":\"ml-dsa-65:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a\",\"ts\":\"2026-11-06T00:00:00Z\",\"x_actor_v1\":{\"grant\":\"86811c45c1bc2d21616a9e594ffc0adae28c72e299ec9b7cc7ed6e85384bc9aa\",\"identity\":\"f8907295c8ed40f2a95f895e94c571f1c0277393950fdbe5a025f4e50097af10\"}}",
+   "changed_members": [
+    "alg",
+    "signer"
+   ],
+   "verified_string": "DSSEv1 49 application/vnd.research-commons.authored.v2+json 606 {\"alg\":\"ml-dsa-65\",\"body\":{\"content\":{\"digest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"size\":4096},\"type\":\"dataset\",\"x_identity_v1\":{}},\"crit\":[\"x_identity_v1\"],\"kind\":\"authored\",\"prev\":\"3844ef7b3ee780bc3e4960eb3917f286be0b5dd954c49b5d13c026924770180e\",\"rc\":\"rc/2\",\"seq\":1,\"signer\":\"ml-dsa-65:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a\",\"ts\":\"2026-11-06T00:00:00Z\",\"x_actor_v1\":{\"grant\":\"86811c45c1bc2d21616a9e594ffc0adae28c72e299ec9b7cc7ed6e85384bc9aa\",\"identity\":\"f8907295c8ed40f2a95f895e94c571f1c0277393950fdbe5a025f4e50097af10\"}}",
+   "sig": "0x5e353fe3bc013ddbe1a1de60733536b32b9c5363bd907a61768189b30ee1554f218075a5667c8f39f467280bb705529dbf5ad721f0358c67704c76416acfca701b",
+   "sig_verifies": false,
+   "outcome": {
+    "result": "read",
+    "status": "unsupported",
+    "why": "alg ml-dsa-65",
+    "actor_read": false
+   }
+  },
+  {
+   "name": "eip-neg-known-alg-future-signer",
+   "chain": "eip",
+   "title": "an implemented alg with a signer outside its key form (a future algorithm's) stays malformed",
+   "of": "eip-authored",
+   "alg": "eip191-secp256k1",
+   "signer": "ml-dsa-65:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+   "delivered": "{\"alg\":\"eip191-secp256k1\",\"body\":{\"content\":{\"digest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"size\":4096},\"type\":\"dataset\",\"x_identity_v1\":{}},\"crit\":[\"x_identity_v1\"],\"kind\":\"authored\",\"prev\":\"3844ef7b3ee780bc3e4960eb3917f286be0b5dd954c49b5d13c026924770180e\",\"rc\":\"rc/2\",\"seq\":1,\"sig\":\"0x5e353fe3bc013ddbe1a1de60733536b32b9c5363bd907a61768189b30ee1554f218075a5667c8f39f467280bb705529dbf5ad721f0358c67704c76416acfca701b\",\"signer\":\"ml-dsa-65:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a\",\"ts\":\"2026-11-06T00:00:00Z\",\"x_actor_v1\":{\"grant\":\"86811c45c1bc2d21616a9e594ffc0adae28c72e299ec9b7cc7ed6e85384bc9aa\",\"identity\":\"f8907295c8ed40f2a95f895e94c571f1c0277393950fdbe5a025f4e50097af10\"}}",
+   "changed_members": [
+    "signer"
+   ],
+   "verified_string": "DSSEv1 49 application/vnd.research-commons.authored.v2+json 613 {\"alg\":\"eip191-secp256k1\",\"body\":{\"content\":{\"digest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"size\":4096},\"type\":\"dataset\",\"x_identity_v1\":{}},\"crit\":[\"x_identity_v1\"],\"kind\":\"authored\",\"prev\":\"3844ef7b3ee780bc3e4960eb3917f286be0b5dd954c49b5d13c026924770180e\",\"rc\":\"rc/2\",\"seq\":1,\"signer\":\"ml-dsa-65:5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a\",\"ts\":\"2026-11-06T00:00:00Z\",\"x_actor_v1\":{\"grant\":\"86811c45c1bc2d21616a9e594ffc0adae28c72e299ec9b7cc7ed6e85384bc9aa\",\"identity\":\"f8907295c8ed40f2a95f895e94c571f1c0277393950fdbe5a025f4e50097af10\"}}",
+   "sig": "0x5e353fe3bc013ddbe1a1de60733536b32b9c5363bd907a61768189b30ee1554f218075a5667c8f39f467280bb705529dbf5ad721f0358c67704c76416acfca701b",
+   "sig_verifies": false,
+   "outcome": {
+    "result": "refused",
+    "class": "intrinsic",
+    "reason": "malformed statement",
+    "detail_has": "neither"
+   }
+  }
+ ],
+ "edition_ids": [
+  {
+   "rc": "rc/2",
+   "payload_type": "application/vnd.research-commons.edition-body.v2+json",
+   "body_jcs": "{\"contents\":{\"controllers\":[{\"key\":\"ed25519:3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c\"}],\"members\":[{\"content\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"role\":\"segment\"}],\"rule\":{\"any_one\":true}},\"predecessors\":[\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\"],\"resource\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\"}",
+   "signed_string": "DSSEv1 53 application/vnd.research-commons.edition-body.v2+json 414 {\"contents\":{\"controllers\":[{\"key\":\"ed25519:3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c\"}],\"members\":[{\"content\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"role\":\"segment\"}],\"rule\":{\"any_one\":true}},\"predecessors\":[\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\"],\"resource\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\"}",
+   "bytes": 482,
+   "edition_id": "d8b32cfdd1fdf74a6766260f2581a7922b8ebc419aa91fa3ee9331912ebafc49"
+  },
+  {
+   "rc": "rc/1",
+   "payload_type": "application/vnd.research-commons.edition-body.v1+json",
+   "body_jcs": "{\"contents\":{\"controllers\":[{\"key\":\"ed25519:3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c\"}],\"members\":[{\"content\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"role\":\"segment\"}],\"rule\":{\"any_one\":true}},\"predecessors\":[\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\"],\"resource\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\"}",
+   "signed_string": "DSSEv1 53 application/vnd.research-commons.edition-body.v1+json 414 {\"contents\":{\"controllers\":[{\"key\":\"ed25519:3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c\"}],\"members\":[{\"content\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"role\":\"segment\"}],\"rule\":{\"any_one\":true}},\"predecessors\":[\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\"],\"resource\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\"}",
+   "bytes": 482,
+   "edition_id": "a7c9767e141e5a824943f5a6c15dadb6bd447448d49d1c81c99339ff5ac2373d"
   }
  ]
 }

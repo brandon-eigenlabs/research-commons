@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Candidate fixed-root-v1 rc/2 statement syntax (not authority)",
-  "description": "Candidate only. Apply strict Commons JSON, sorted-set/time constraints, cryptographic verification and evidence-relative authority evaluation as specified in DESIGN-notes-fixed-root-identity.md. Drafts contain no signature and confer no authority. No production reader support.",
+  "description": "The fixed-root-v1 identity profile on rc/2, read and written by the production reader and writer (DESIGN-notes-fixed-root-identity.md). Apply strict Commons JSON, sorted-set/time constraints, cryptographic verification and evidence-relative authority evaluation as specified there: a schema-valid statement is syntax only, never authority. Drafts contain no signature and confer no authority.",
   "allOf": [
     {
       "$ref": "#/$defs/signed"
@@ -53,6 +53,7 @@
       ]
     },
     "subjects": {
+      "description": "A set: entries sorted by canonical encoding (UTF-16 order of each entry's JCS text; a string entry by UTF-16 order of the string) and duplicate-free. A reader refuses an unsorted list; uniqueItems alone does not express the order.",
       "type": "array",
       "items": {
         "$ref": "#/$defs/subject"
@@ -95,6 +96,7 @@
           "type": "object",
           "properties": {
             "contents": {
+              "description": "A set: entries sorted by canonical encoding (UTF-16 order of each entry's JCS text; a string entry by UTF-16 order of the string) and duplicate-free. A reader refuses an unsorted list; uniqueItems alone does not express the order.",
               "type": "array",
               "items": {
                 "$ref": "#/$defs/digest"
@@ -129,6 +131,7 @@
           "type": "object",
           "properties": {
             "statements": {
+              "description": "A set: entries sorted by canonical encoding (UTF-16 order of each entry's JCS text; a string entry by UTF-16 order of the string) and duplicate-free. A reader refuses an unsorted list; uniqueItems alone does not express the order.",
               "type": "array",
               "items": {
                 "$ref": "#/$defs/id"
@@ -149,6 +152,7 @@
       "type": "object",
       "properties": {
         "resources": {
+          "description": "A set: entries sorted by canonical encoding (UTF-16 order of each entry's JCS text; a string entry by UTF-16 order of the string) and duplicate-free. A reader refuses an unsorted list; uniqueItems alone does not express the order.",
           "type": "array",
           "items": {
             "$ref": "#/$defs/id"
@@ -167,6 +171,7 @@
       "type": "object",
       "properties": {
         "tasks": {
+          "description": "A set: entries sorted by canonical encoding (UTF-16 order of each entry's JCS text; a string entry by UTF-16 order of the string) and duplicate-free. A reader refuses an unsorted list; uniqueItems alone does not express the order.",
           "type": "array",
           "items": {
             "$ref": "#/$defs/id"
@@ -355,6 +360,7 @@
       "type": "object",
       "properties": {
         "amends": {
+          "description": "A set: entries sorted by canonical encoding (UTF-16 order of each entry's JCS text; a string entry by UTF-16 order of the string) and duplicate-free. A reader refuses an unsorted list; uniqueItems alone does not express the order.",
           "type": "array",
           "items": {
             "$ref": "#/$defs/id"
@@ -1625,6 +1631,7 @@
           "$ref": "#/$defs/id"
         },
         "predecessors": {
+          "description": "A set: entries sorted by canonical encoding (UTF-16 order of each entry's JCS text; a string entry by UTF-16 order of the string) and duplicate-free. A reader refuses an unsorted list; uniqueItems alone does not express the order.",
           "type": "array",
           "items": {
             "$ref": "#/$defs/id"
@@ -1877,6 +1884,7 @@
           "additionalProperties": false
         },
         "permissions": {
+          "description": "A set: entries sorted by canonical encoding (UTF-16 order of each entry's JCS text; a string entry by UTF-16 order of the string) and duplicate-free. A reader refuses an unsorted list; uniqueItems alone does not express the order.",
           "type": "array",
           "items": {
             "$ref": "#/$defs/permission"
@@ -1986,6 +1994,7 @@
           ]
         },
         "merges": {
+          "description": "A set: entries sorted by canonical encoding (UTF-16 order of each entry's JCS text; a string entry by UTF-16 order of the string) and duplicate-free. A reader refuses an unsorted list; uniqueItems alone does not express the order.",
           "type": "array",
           "items": {
             "$ref": "#/$defs/id"
@@ -1998,6 +2007,7 @@
           "$ref": "#/$defs/time"
         },
         "crit": {
+          "description": "The one value fixed-root-v1 writes. A reader reads a crit that also names a token it has not registered as unsupported (a later extension), not as a schema failure; a crit without x_identity_v1 is invalid.",
           "const": [
             "x_identity_v1"
           ]
