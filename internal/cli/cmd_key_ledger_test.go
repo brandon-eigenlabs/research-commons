@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"os"
 	"path/filepath"
@@ -216,6 +217,9 @@ func TestLedgerKeySignAborts(t *testing.T) {
 		{"path without --ledger", nil, true, []string{"key", "sign", "--package", pp, "--key", root.keyF, "--ledger-path", ledgerTestPath}, ExitDidNotStart, "", false},
 		{"--key and --ledger", nil, true, append(cloneArgs(base), "--key", root.keyF), ExitDidNotStart, "", false},
 		{"bad device", nil, true, append(cloneArgs(base), "--ledger-device", "/dev/sda"), ExitDidNotStart, "", false},
+		// a review left open by a command that went away, decided since: its answer reaches the next request
+		{"stray refusal", func(f *ledgertest.App) { f.Stray = []byte{0x69, 0x85} }, true, base, ExitCouldNot, ledger.DeviceError, false},
+		{"stray signature", func(f *ledgertest.App) { f.Stray = append(append([]byte{28}, make([]byte, 64)...), 0x90, 0x00) }, true, base, ExitCouldNot, ledger.BadResponse, false},
 	}
 	for _, c := range cases {
 		n++
@@ -273,3 +277,185 @@ func TestLedgerKeySignAborts(t *testing.T) {
 }
 
 func cloneArgs(s []string) []string { return append([]string{}, s...) }
+
+// interruptOn is an Env.Interrupt that delivers one interrupt once fire is closed, recording that it was started and
+// stopped.
+type interruptOn struct {
+	fire             chan struct{}
+	started, stopped int
+}
+
+func (w *interruptOn) watch() (<-chan string, func()) {
+	w.started++
+	out := make(chan string, 1)
+	quit := make(chan struct{})
+	go func() {
+		select {
+		case <-w.fire:
+			out <- "SIGINT"
+		case <-quit:
+		}
+	}()
+	once := false
+	return out, func() {
+		if !once {
+			once = true
+			w.stopped++
+			close(quit)
+		}
+	}
+}
+
+func runLedgerInterrupt(wd string, open LedgerOpener, intr InterruptWatcher, env map[string]string, args ...string) result {
+	var o, e bytes.Buffer
+	code := Main(args, &Env{Stdout: &o, Stderr: &e, Getenv: func(k string) string { return env[k] },
+		Getwd: func() (string, error) { return wd, nil }, Build: Build{Version: "test", Commit: "0000000"}, Ledger: open, Interrupt: intr})
+	return result{code, o.String(), e.String()}
+}
+
+// TestLedgerInterruptedReview: an interrupt while the device waits for the holder's review (key sign --ledger, and
+// key show --ledger --ledger-confirm) prints that a review may still be open on the device, closes the transport,
+// writes no signature and exits 3 (ledger-interrupted). The review stays open on the device: the next request is
+// refused busy until the holder decides it there. Without an interrupt the same held review, once approved, signs.
+// The line asking for the review is the last thing printed before the device is asked to sign.
+func TestLedgerInterruptedReview(t *testing.T) {
+	dev := ledgertest.New("intr")
+	root := newLedgerHome(t, dev)
+	machine := newSigningMachine(t)
+	pp, _ := root.prepare("new.pkg", "identity", "new", "--ts", "2026-11-16T00:00:00Z")
+	base := []string{"key", "sign", "--package", pp, "--ledger", "--ledger-path", ledgerTestPath}
+	for _, human := range []bool{false, true} {
+		f := ledgertest.New("intr")
+		f.Hold = true
+		w := &interruptOn{fire: make(chan struct{})}
+		go func() { <-f.Reviewing(); close(w.fire) }()
+		out := filepath.Join(machine.dir, "intr.sig")
+		args := append(cloneArgs(base), "--out", out)
+		if !human {
+			args = append(args, "--json")
+		}
+		r := runLedgerInterrupt(machine.dir, f.Opener(nil), w.watch, machine.env, args...)
+		if r.code != ExitCouldNot || !strings.Contains(r.stderr, ReviewMayBeOpen) {
+			t.Fatalf("interrupted (human %v): %d\n%s%s", human, r.code, r.stdout, r.stderr)
+		}
+		if human && !strings.Contains(r.stderr, "interrupted while the device waited for you") {
+			t.Fatalf("human problem: %s", r.stderr)
+		}
+		if !human && !strings.Contains(r.stdout, ProblemTypeBase+ledger.Interrupted) {
+			t.Fatalf("json problem: %s", r.stdout)
+		}
+		if _, err := os.Stat(out); err == nil {
+			t.Fatal("a signature was written")
+		}
+		if f.Closed != 1 || w.started != 1 || w.stopped != 1 {
+			t.Fatalf("transport closed %d, watch started %d stopped %d", f.Closed, w.started, w.stopped)
+		}
+		// the review is still open on the device: another request is busy until the holder decides
+		if r := runLedger(machine.dir, f.Opener(nil), machine.env, append(cloneArgs(base), "--out", out, "--json")...); r.code != ExitCouldNot || !strings.Contains(r.stdout, ledger.Busy) {
+			t.Fatalf("after the interrupt: %d %s", r.code, r.stdout)
+		}
+		f.Decide()
+	}
+	// the watch is started only around the review: a refusal before the device is asked starts none
+	w := &interruptOn{fire: make(chan struct{})}
+	locked := ledgertest.New("intr")
+	locked.Locked = true
+	if r := runLedgerInterrupt(machine.dir, locked.Opener(nil), w.watch, machine.env, append(cloneArgs(base), "--out", filepath.Join(machine.dir, "locked.sig"), "--json")...); r.code != ExitCouldNot || w.started != 0 {
+		t.Fatalf("locked: %d started %d", r.code, w.started)
+	}
+	// a held review approved by the holder signs, and the watch is stopped
+	f := ledgertest.New("intr")
+	f.Hold = true
+	var atSign string
+	var errBuf *bytes.Buffer
+	go func() { <-f.Reviewing(); f.Decide() }()
+	var o, e bytes.Buffer
+	errBuf = &e
+	f.BeforeSign = func() { atSign = errBuf.String() }
+	w = &interruptOn{fire: make(chan struct{})}
+	code := Main(append(cloneArgs(base), "--out", "-"), &Env{Stdout: &o, Stderr: &e, Getenv: func(k string) string { return machine.env[k] },
+		Getwd: func() (string, error) { return machine.dir, nil }, Build: Build{Version: "test", Commit: "0000000"}, Ledger: f.Opener(nil), Interrupt: w.watch})
+	if code != ExitOK || f.Signed != 1 || !strings.HasPrefix(o.String(), "0x") || w.started != 1 || w.stopped != 1 || f.Closed != 0 {
+		t.Fatalf("approved: %d signed %d started %d stopped %d closed %d\n%s%s", code, f.Signed, w.started, w.stopped, f.Closed, o.String(), e.String())
+	}
+	// the review line is the last thing standard error said before the device was asked to sign
+	lines := strings.Split(strings.TrimSuffix(atSign, "\n"), "\n")
+	if last := lines[len(lines)-1]; !strings.HasPrefix(last, "commons: review the message on the device now") {
+		t.Fatalf("last line before the sign request: %q", last)
+	}
+	// key show --ledger-confirm: an interrupt while the address is on the device's screen
+	f = ledgertest.New("intr")
+	f.Hold = true
+	w = &interruptOn{fire: make(chan struct{})}
+	go func() { <-f.Reviewing(); close(w.fire) }()
+	r := runLedgerInterrupt(machine.dir, f.Opener(nil), w.watch, nil, "key", "show", "--ledger", "--ledger-path", ledgerTestPath, "--ledger-confirm", "--json")
+	if r.code != ExitCouldNot || !strings.Contains(r.stderr, ReviewMayBeOpen) || !strings.Contains(r.stdout, ledger.Interrupted) || f.Closed != 1 {
+		t.Fatalf("key show interrupted: %d closed %d\n%s%s", r.code, f.Closed, r.stdout, r.stderr)
+	}
+	f.Decide()
+}
+
+// TestLedgerCompromisedStoreHost: the connector's half of a compromised operational host (the store's machine). A
+// host that alters the package it hands to the signing machine (the PAE, the signer, the summary the holder reads,
+// or the envelope under them) gets nothing from the device: key sign --ledger refuses before the device is asked to
+// sign (exit 1, naming the member), writes nothing, and the device saw no sign request. A host that prepares a
+// different statement honestly (a valid package for other bytes) is caught by the separate-channel digest
+// (--expect-pae-sha256) before the device is asked.
+func TestLedgerCompromisedStoreHost(t *testing.T) {
+	conformance.Partial(t, "C-id-40", "the connector's half of a compromised store host: a package altered after --prepare (PAE, signer, summary, envelope) or a valid package for other bytes caught by --expect-pae-sha256 is refused by key sign --ledger before the device is asked to sign, nothing written; the custody drill of a compromised host is not recorded")
+	dev := ledgertest.New("host")
+	root := newLedgerHome(t, dev)
+	machine := newSigningMachine(t)
+	pp, pkg := root.prepare("new.pkg", "identity", "new", "--ts", "2026-11-16T00:00:00Z")
+	good := sha256.Sum256(paeOf(t, pkg))
+	other := newExtHome(t, wire.AlgEIP191)
+	mutated := func(name string, f func(p *canon.Object)) string {
+		p := clonePkg(pkg)
+		f(p)
+		path := filepath.Join(machine.dir, name)
+		writePkg(t, path, p)
+		return path
+	}
+	// an honest-looking package for other bytes: the host prepared a different inception (another ts)
+	otherPP, _ := root.prepare("other.pkg", "identity", "new", "--ts", "2026-11-16T00:00:01Z")
+	cases := []struct {
+		name, pkg string
+		extra     []string
+		member    string
+	}{
+		{"pae", mutated("h-pae.pkg", func(p *canon.Object) {
+			p.Members["pae"] = canon.String(base64.StdEncoding.EncodeToString(append(paeOf(t, pkg), ' ')))
+		}), nil, "pae"},
+		{"signer", mutated("h-signer.pkg", func(p *canon.Object) { p.Members["signer"] = canon.String(other.signer) }), nil, "signer"},
+		{"summary", mutated("h-sum.pkg", func(p *canon.Object) {
+			p.Members["summary"].(*canon.Object).Members["root"] = canon.String(other.signer)
+		}), nil, "summary"},
+		{"envelope", mutated("h-env.pkg", func(p *canon.Object) {
+			p.Members["envelope"].(*canon.Object).Members["ts"] = canon.String("2026-11-16T00:00:02Z")
+		}), nil, "pae"},
+		{"other bytes", otherPP, []string{"--expect-pae-sha256", hex.EncodeToString(good[:])}, ""},
+	}
+	for _, c := range cases {
+		f := ledgertest.New("host")
+		out := filepath.Join(machine.dir, "h-"+strings.ReplaceAll(c.name, " ", "-")+".sig")
+		args := append([]string{"key", "sign", "--package", c.pkg, "--ledger", "--ledger-path", ledgerTestPath, "--out", out, "--json"}, c.extra...)
+		r := runLedger(machine.dir, f.Opener(nil), machine.env, args...)
+		if r.code != ExitWrong || (c.member != "" && !strings.Contains(r.stdout, `"scope":"package member `+c.member+`"`)) {
+			t.Fatalf("%s: %d %s", c.name, r.code, r.stdout)
+		}
+		if _, err := os.Stat(out); err == nil {
+			t.Fatalf("%s: a signature was written", c.name)
+		}
+		for _, a := range f.Received {
+			if a[0] == 0xe0 && a[1] == 0x08 {
+				t.Fatalf("%s: the device was asked to sign", c.name)
+			}
+		}
+	}
+	// control: the untampered package with the matching digest signs
+	f := ledgertest.New("host")
+	if r := runLedger(machine.dir, f.Opener(nil), machine.env, "key", "sign", "--package", pp, "--ledger", "--ledger-path", ledgerTestPath,
+		"--expect-pae-sha256", hex.EncodeToString(good[:]), "--out", "-"); r.code != ExitOK || f.Signed != 1 {
+		t.Fatalf("control: %d %s", r.code, r.stderr)
+	}
+}
