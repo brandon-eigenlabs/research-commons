@@ -26,7 +26,8 @@ import (
 //   - key sign runs the same check, refuses unless the key file is the package's signer, signs the recomputed PAE
 //     with the writer's own signing code (wire.Key.Sign: RFC 8032 Ed25519, or EIP-191 personal_sign), verifies the
 //     signature as every reader does, and writes it in the statement encoding --complete --signature reads. It
-//     signs only the PAE of an envelope the tool would prepare, never bytes given to it.
+//     signs only the PAE of an envelope the tool would prepare, never bytes given to it: the package check refuses
+//     an envelope carrying a member --prepare never writes (unpreparedMember).
 //
 // Neither reads a store; both are store-less by construction (Command.Store is false, so --store is refused and
 // $COMMONS_STORE is not read).
@@ -38,7 +39,7 @@ func init() {
 			{Name: "pae-out", Value: "file", Help: "write the exact PAE bytes a signature covers (the decoded pae member, no newline) to this new file, for a signer that is not this tool; never overwritten; written only when every check passes"},
 			expectPAEFlag,
 		},
-		Help: "Reads a package written by --prepare (" + SigningPackageFormat + ", provisional) and recomputes, from its envelope alone, " +
+		Help: "Reads a package written by --prepare (" + SigningPackageFormat + ") and recomputes, from its envelope alone, " +
 			"everything the package derives from it: the PAE bytes, the statement id, the alg, the signer, the log head's shape and the summary, exactly as --complete does. " +
 			"Exit 0 when every derived member matches, printing the summary, the signer, the alg, the proposed id, pae_sha256 and pae_bytes; " +
 			"exit 1 naming the first member that differs (and listing every one); exit 2 when the file is unreadable or not a package. " +
@@ -157,13 +158,14 @@ func futureSkewAdvisory(st *wire.Statement) string {
 // packageObj is what a checked package says: the statement a signature would cover, and what was not checked.
 func packageObj(out *Obj, path string, st *wire.Statement) *Obj {
 	sum := sha256.Sum256(st.SignedString)
+	sum2 := summaryOf(st)
 	out.set("package", peerV(path)).set("format", textV(SigningPackageFormat)).
 		set("checked", textV("every derived member (pae, statement, alg, signer, log_head shape, summary) is what the envelope gives")).
 		set("log_head_check", textV(logHeadUnchecked)).
 		set("statement", refV(st.ID)).set("kind", peerV(st.Kind)).set("signer", refV(st.Signer)).set("alg", textV(st.Alg)).
 		set("seq", intV(st.Seq)).set("ts_signer_declared", refV(st.TS.Text)).set("log_head", rawV{logHead(head{seq: st.Seq, prev: st.Prev})}).
 		set("pae_sha256", refV(hex.EncodeToString(sum[:]))).set("pae_bytes", intV(int64(len(st.SignedString)))).
-		set("summary", rawV{summaryOf(st)})
+		set("summary", rawV{sum2}).set("review", reviewOf(sum2))
 	if adv := futureSkewAdvisory(st); adv != "" {
 		out.set("advisories", texts(adv))
 	}

@@ -688,19 +688,46 @@ connector or a finalized external-package interchange schema.
 
 **The tool's external-signing package.** `identity new`, `identity grant`, `identity cut`
 and `publish --as` take `--prepare <file> --signer <key>`: the references are resolved as
-for direct signing and one package file is written, nothing appended. It is canonical
-JSON with `format`, the unsigned `envelope`, `pae` (the exact signed string, standard
-padded base64), `alg`, `signer`, the proposed `statement` id, `log_head` (the signer's
-line the envelope extends, `{seq, statement}`, or `genesis`) and a human `summary`
-(identity, delegate key and inception, permissions, or the cut's grant, last-good and
-"cannot be undone"). `--complete <file> --signature <file|->` recomputes the PAE and id
-from the envelope and refuses, naming the member, when any derived member differs; it
+for direct signing and one package file is written, nothing appended. It is one JSON
+object, written canonical (JCS) and newline-terminated, with exactly these members:
+
+| member | type | value |
+|---|---|---|
+| `format` | string | the format tag (below) |
+| `envelope` | object | the unsigned statement: an `rc/2` envelope with every member but `sig`; the only source of every member below |
+| `pae` | string | the exact signed string (§2 PAE of the envelope), RFC 4648 standard base64 with padding |
+| `alg` | string | the envelope's `alg` |
+| `signer` | string | the envelope's `signer` |
+| `statement` | string | the proposed statement id, 64 lowercase hex: sha256 of the PAE |
+| `log_head` | string or object | `"genesis"` when the envelope's `prev` is null (`seq` 0); else `{"seq": envelope.seq - 1, "statement": envelope.prev}`, the signer's line the envelope extends |
+| `summary` | object | what a human reviews, as tokens and envelope values only (below) |
+
+`summary.action` is a token, and the other members are copied from the envelope (a member
+the envelope lacks is `null`):
+
+| `action` | other members |
+|---|---|
+| `inception` | `identity` (the statement's own id), `root` (its signer), `profile` |
+| `grant` | `identity`, `delegate` (`delegate.key`), `delegate_inception` (`delegate.inception`), `permissions` |
+| `cut` | `identity`, `grant`, `last_good` (`null` when none), `reason` |
+| `act` | `kind` (the envelope's), `identity`, `grant` (from `x_actor_v1`), and `amends` when the marker carries it |
+
+The summary holds no prose. The words a human reads beside it (the custody warning of an
+inception, "a cut cannot be undone") are rendered at display time by `--prepare`, `package
+show` and `key sign`, so a package reads the same under every release that reads its format.
+`--complete <file> --signature <file|->` recomputes the PAE and id
+from the envelope and refuses, naming the member, when any derived member differs, and
+refuses an envelope carrying a member `--prepare` never writes (an envelope member a reader
+would ignore, or `merges`), even when every derived member agrees with it; it
 accepts the signature only in the statement encoding of the alg (wire note §4), verifies
 it over the recomputed bytes, runs every check of direct signing again, refuses
 `stale-prepare` (exit 1) unless the signer's log is still at `log_head`, and commits
 through the same journal unit. Every refusal appends nothing. Its format tag,
-`rc-signing-package/0`, is this tool's own and **provisional** (like `rc-key/0`); it is
-not the finalized interchange schema this section leaves open. A package carries one
+`rc-signing-package/1`, is this tool's own and **frozen** with `1.0` (like `rc-key/0`, the
+key file); a change to a package's bytes takes a new tag. It is the tool's interchange file,
+not a schema every connector must speak. `rc-signing-package/0`, whose summary carried prose,
+is retired: a `/0` package is refused (`retired-package-format`, exit 2) with the next step
+to prepare it again; a package is short-lived, so no `/0` reader is kept. A package carries one
 statement, so `publish --as --prepare` of `authored` (or of an `observed` with its bytes) needs `--no-holds`.
 
 What the signing device signs is the decoded `pae` bytes, unchanged. For `ed25519` the
@@ -726,7 +753,8 @@ first, refuses unless the key file's signer is the package's signer, signs the r
 PAE with the code the writer signs with, verifies the signature as a reader does, and
 writes it in the encoding above, newline-terminated, to a new file (never overwritten) or
 standard output. Every refusal writes nothing; `--dry-run` prints what would be signed.
-It signs only the PAE of an envelope the tool would prepare, never bytes it is handed.
+It signs only the PAE of an envelope the tool would prepare, never bytes it is handed: an
+envelope with a member `--prepare` never writes is refused by the same package check.
 `package show --pae-out <file>` writes those PAE bytes (the decoded `pae`, no newline) to a new
 file, only once every check has passed, for a signer that is not this tool.
 `--expect-pae-sha256 <hex>` (on `package show` and `key sign`) compares the sha256 of the

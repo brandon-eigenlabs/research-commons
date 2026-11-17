@@ -25,7 +25,7 @@ import (
 //     first line, --last-good, the signer's log head), builds the unsigned envelope the signature will cover, checks
 //     that every reader would hold it valid once signed (wire.CheckUnsigned), and writes one package file: the
 //     envelope, the exact PAE bytes, the algorithm, the signer, the proposed statement id, the log head it was
-//     prepared at and a human summary. Nothing is appended. An existing file is never overwritten.
+//     prepared at and a summary (tokens and envelope values; the prose is rendered at display time). Nothing is appended. An existing file is never overwritten.
 //   - --complete re-reads the package and trusts none of its derived fields: the PAE and the id are recomputed from
 //     the envelope and must equal the package's, as must the alg, signer, log head and summary (each mismatch is
 //     named). The signature is verified over the recomputed PAE under the envelope's signer. The command then runs
@@ -34,16 +34,22 @@ import (
 //     builds must be the prepared envelope byte for byte. Only then is the line committed, through the same commit
 //     unit as direct signing. Every refusal leaves the store unchanged.
 //
-// The package format is this tool's own and provisional, like the key file format.
+// The package format is this tool's own, versioned and frozen (identity profile §8): a change that alters a
+// package's bytes takes a new tag.
 
 // SigningPackageFormat is the format tag of an external-signing package.
-const SigningPackageFormat = "rc-signing-package/0"
+const SigningPackageFormat = "rc-signing-package/1"
+
+// retiredPackageFormat is the tag of the packages releases before the frozen format wrote, whose summary carried
+// prose. A package is short-lived (it is completed or discarded once its signer's log moves), so no reader is kept:
+// such a package is refused, naming why, and prepared again.
+const retiredPackageFormat = "rc-signing-package/0"
 
 // maxSignatureInput bounds the --signature input: the longest encoding is 132 bytes plus a line ending.
 const maxSignatureInput = 256
 
 var extFlags = []Flag{
-	{Name: "prepare", Value: "file", Help: "do not sign: write an external-signing package (" + SigningPackageFormat + ", provisional) to this new file: the unsigned statement, the exact bytes to sign (PAE, base64), the signer, the proposed id, your log's head and a summary; needs --signer, takes no --key, appends nothing; an existing file is never overwritten"},
+	{Name: "prepare", Value: "file", Help: "do not sign: write an external-signing package (" + SigningPackageFormat + ") to this new file: the unsigned statement, the exact bytes to sign (PAE, base64), the signer, the proposed id, your log's head and a summary; needs --signer, takes no --key, appends nothing; an existing file is never overwritten"},
 	{Name: "signer", Value: "key", Help: "with --prepare: the public form of the key that will sign (ed25519:<64 hex> or 0x<40 hex>); the algorithm follows from the form", Check: func(v string) error {
 		if !reGrantee.MatchString(v) {
 			return errString("not a key (ed25519: + 64 lowercase hex, or 0x + 40 lowercase hex)")
@@ -291,6 +297,11 @@ func (m packageMismatch) problem(all []packageMismatch, path string, exit int) *
 // signer, log_head, summary). It reads no store: whether the log head is still the signer's head is --complete's.
 func inspectPackage(pkg *canon.Object, path, scope string) (*wire.Statement, []packageMismatch, *Problem) {
 	bad := func(title, detail, next string) *Problem { return badPackageAt(scope, title, detail, path, next) }
+	if pkg.Members["format"] == canon.String(retiredPackageFormat) {
+		return nil, nil, usage("retired-package-format", "the package is of the retired format "+retiredPackageFormat,
+			"this release reads "+SigningPackageFormat+" only: a "+retiredPackageFormat+" package's summary carried prose, so the format was replaced; nothing was done",
+			scope, "re-prepare it: run the same command again with --prepare <new file> --signer <key> and sign the new package", path)
+	}
 	if pkg.Members["format"] != canon.String(SigningPackageFormat) {
 		return nil, nil, bad("not an external-signing package", "the format member is not "+SigningPackageFormat, "name a file written by --prepare")
 	}
@@ -309,6 +320,10 @@ func inspectPackage(pkg *canon.Object, path, scope string) (*wire.Statement, []p
 	}
 	if st.Status != wire.Valid {
 		return nil, nil, bad("the package's envelope would not be valid once signed", "it reads "+string(st.Status)+": "+st.Why, "prepare the statement again")
+	}
+	if m := unpreparedMember(env, st); m != "" {
+		return nil, nil, bad("the package's envelope carries what --prepare never writes", "envelope member "+m+" is not the one --prepare writes for this statement",
+			"prepare the statement again; do not edit a package")
 	}
 	var mm []packageMismatch
 	add := func(member, detail string) { mm = append(mm, packageMismatch{member, detail}) }
@@ -336,6 +351,34 @@ func inspectPackage(pkg *canon.Object, path, scope string) (*wire.Statement, []p
 		add("summary", "a summary is a display of the envelope, never the signed payload")
 	}
 	return st, mm, nil
+}
+
+// unpreparedMember is the first envelope member that is not what --prepare writes for the statement the envelope
+// reads as: the envelope is built again from its read fields, exactly as --prepare builds one (wire.Draft.Envelope:
+// no merges, the actor and crit the reader read), and compared member by member. A member a reader ignores (an
+// unknown envelope member is inert) would still be signed, and --complete, which rebuilds the statement from the
+// command's inputs, never commits it; so the one package check refuses it, and key sign signs only the PAE of an
+// envelope the tool would prepare. "" when the envelope is exactly a prepared one.
+func unpreparedMember(env *canon.Object, st *wire.Statement) string {
+	d := wire.Draft{RC: st.RC, Kind: st.Kind, Seq: st.Seq, Prev: st.Prev, TS: st.TS.Text, Crit: st.Crit, Body: st.Body}
+	if st.Actor != nil {
+		a := *st.Actor
+		d.Actor = &a
+	}
+	want := d.Envelope(&externalKey{signer: st.Signer, alg: st.Alg})
+	keys := canon.SortedKeys(env)
+	for _, k := range canon.SortedKeys(want) {
+		if !slices.Contains(keys, k) {
+			return k
+		}
+	}
+	for _, k := range keys {
+		w, ok := want.Members[k]
+		if !ok || !bytes.Equal(canon.Encode(w), canon.Encode(env.Members[k])) {
+			return k
+		}
+	}
+	return ""
 }
 
 // verifyOver checks sig over the envelope as every reader reads the signed line: verified under the envelope's own
@@ -417,7 +460,16 @@ func logHead(h head) canon.Value {
 }
 
 // summaryOf is what a human reviews before signing: who acts, for which identity, what it grants or cuts. It is
-// computed from the envelope only, both when preparing and when completing.
+// computed from the envelope only, both when preparing and when completing, and holds tokens and envelope-derived
+// values only, never prose: a package must read the same under every release that reads its format, so the words a
+// human reads are rendered at display time (reviewOf). Members by action (identity profile §8):
+//
+//	inception: action, identity (the statement's own id), root (its signer), profile
+//	grant:     action, identity, delegate (delegate.key), delegate_inception, permissions
+//	cut:       action, identity, grant, last_good (null: none), reason
+//	act:       action, kind, identity, grant, and amends when the marker carries it
+//
+// A member the envelope does not carry is null.
 func summaryOf(st *wire.Statement) *canon.Object {
 	b := st.Body
 	get := func(k string) canon.Value {
@@ -428,25 +480,24 @@ func summaryOf(st *wire.Statement) *canon.Object {
 	}
 	switch st.Kind {
 	case "identity_inception":
-		return objOf("action", canon.String("create a fixed-root identity"), "identity", canon.String(st.ID), "root", canon.String(st.Signer),
-			"profile", get("profile"), "custody", canon.String("this key becomes the identity's only administrator; fixed-root-v1 has no recovery if it is lost or stolen"))
+		return objOf("action", canon.String(actionInception), "identity", canon.String(st.ID), "root", canon.String(st.Signer), "profile", get("profile"))
 	case "identity_grant":
 		d, _ := b.Members["delegate"].(*canon.Object)
 		var key, inc canon.Value = canon.Null{}, canon.Null{}
 		if d != nil {
-			key, inc = d.Members["key"], d.Members["inception"]
+			if v, ok := d.Members["key"]; ok {
+				key = v
+			}
+			if v, ok := d.Members["inception"]; ok {
+				inc = v
+			}
 		}
-		return objOf("action", canon.String("grant a delegate key the right to act for the identity"), "identity", get("identity"),
+		return objOf("action", canon.String(actionGrant), "identity", get("identity"),
 			"delegate", key, "delegate_inception", inc, "permissions", get("permissions"))
 	case "identity_cut":
-		lg := get("last_good")
-		if _, none := lg.(canon.Null); none {
-			lg = canon.String("none: every act under the grant stops counting")
-		}
-		return objOf("action", canon.String("cut a grant"), "identity", get("identity"), "grant", get("grant"), "last_good", lg, "reason", get("reason"),
-			"irreversible", canon.String("a cut cannot be undone: the delegate's acts under this grant after last_good count toward nothing for the identity, for every reader that holds the cut"))
+		return objOf("action", canon.String(actionCut), "identity", get("identity"), "grant", get("grant"), "last_good", get("last_good"), "reason", get("reason"))
 	}
-	o := objOf("action", canon.String("act for an identity: "+st.Kind), "identity", canon.String(st.Actor.Identity), "grant", canon.String(st.Actor.Grant))
+	o := objOf("action", canon.String(actionAct), "kind", canon.String(st.Kind), "identity", canon.String(st.Actor.Identity), "grant", canon.String(st.Actor.Grant))
 	if m, ok := b.Members[wire.IdentityCrit].(*canon.Object); ok {
 		if a, ok := m.Members["amends"]; ok {
 			o.Keys = append(o.Keys, "amends")
@@ -454,6 +505,43 @@ func summaryOf(st *wire.Statement) *canon.Object {
 		}
 	}
 	return o
+}
+
+// The summary's action tokens.
+const (
+	actionInception = "inception"
+	actionGrant     = "grant"
+	actionCut       = "cut"
+	actionAct       = "act"
+)
+
+// reviewOf is the prose a human reads beside a summary, rendered at display time (--prepare, package show, key
+// sign) from the summary alone. It is never part of a package, so its words may change in any release.
+func reviewOf(sum *canon.Object) listV {
+	str := func(k string) string {
+		s, _ := sum.Members[k].(canon.String)
+		return string(s)
+	}
+	switch str("action") {
+	case actionInception:
+		return texts("create a fixed-root identity whose root is "+str("root"),
+			"custody: this key becomes the identity's only administrator; fixed-root-v1 has no recovery if it is lost or stolen")
+	case actionGrant:
+		return texts("grant the delegate key " + str("delegate") + " the right to act for the identity, with the permissions above")
+	case actionCut:
+		l := texts("cut the grant " + str("grant"))
+		if _, none := sum.Members["last_good"].(canon.Null); none {
+			l = append(l, textV("last_good is none: every act under the grant stops counting"))
+		}
+		return append(l, textV("a cut cannot be undone: the delegate's acts under this grant after last_good count toward nothing for the identity, for every reader that holds the cut"))
+	case actionAct:
+		l := texts("act for the identity under the grant " + str("grant") + ": a statement of kind " + str("kind"))
+		if _, ok := sum.Members["amends"]; ok {
+			l = append(l, textV("it amends the statement named in amends"))
+		}
+		return l
+	}
+	return nil
 }
 
 // signExternal is signAll for a key the tool does not hold. Preparing: the one draft is placed at h and checked
@@ -577,7 +665,7 @@ func preparedResult(c *Ctx, out *Obj, s signed, h head) (*Obj, int, error) {
 		set("kind", peerV(s.st.Kind)).set("signer", refV(s.st.Signer)).set("alg", textV(s.st.Alg)).set("seq", intV(s.st.Seq)).
 		set("ts_signer_declared", refV(s.st.TS.Text)).set("log_head", rawV{logHead(h)}).
 		set("pae_sha256", refV(hex.EncodeToString(sum2[:]))).set("pae_bytes", intV(int64(len(s.st.SignedString)))).
-		set("summary", rawV{sum}).set("committed", boolV(false)).
+		set("summary", rawV{sum}).set("review", reviewOf(sum)).set("committed", boolV(false)).
 		set("next", textV("review the summary; sign the package's pae bytes (base64-decoded, unchanged) with "+s.st.Signer+" ("+s.st.Alg+"); then run this command with --complete "+x.prepare+" --signature <file|->"))
 	return out, ExitOK, nil
 }
