@@ -1,7 +1,7 @@
 # Design note: task contracts (`task-contract-v1`)
 
 **Date:** 2026-10-27, revised 2026-10-28 (revision 2) and 2026-11-08 (revision 3); accepted 2026-11-10 ·
-**Status:** accepted. The profile is decided; the reference implementation is in progress.
+**Status:** accepted. The profile is decided and implemented by the reference reader (`task-contract-v1`); see "Status for 1.0" for what is left for later.
 **Tracking issue:** #109
 **Builds on:** the claims-model note §8 (resources, editions) and §9 (research exchange), #69; the wire-format
 note §1.1, §5, §6; the bitcoin-time note §7, §8, §11; #3 (pre-registration), #65 (stochastic replication)
@@ -193,6 +193,10 @@ Not in the table, on purpose: deduplication, which has one rule (§6 Q1) and so 
 after acceptance is `task-contract-v2`. A profile never changes meaning under a fixed name.
 
 ### 3.2 Role fields in `rc/1` and `rc/2`
+
+> **At 1.0:** the fixed-root identity profile below was since accepted and is frozen at 1.0 (`rc/2`,
+> `DESIGN-notes-fixed-root-identity.md`). The text of this section is kept as written when the contract was proposed;
+> "candidate" and "if accepted" now read as "the profile" and "under `rc/2`".
 
 The fixed-root identity candidate profile, proposed in a separate change and not accepted, would move the
 task roles into a typed extension object in a new major, `rc/2`:
