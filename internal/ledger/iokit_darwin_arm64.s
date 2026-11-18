@@ -1,4 +1,10 @@
 // Trampolines to the functions iokit_imports_darwin.go imports, one per function, in the same order.
+//
+// This is golang.org/x/sys/unix's pattern for calling libSystem without cgo (zsyscall_darwin_*.s): the linker
+// resolves each go:cgo_import_dynamic symbol, a JMP trampoline gives it an address, and hid_darwin.go calls it
+// through the runtime's syscall.syscall9. Checked against go1.27.2. The syscall9 route is reachable only while the
+// toolchain keeps that linkname open (it does for x/sys); if a Go release closes it, the build fails here, not at run
+// time, and CI's darwin cross-build (go.yml, static build) catches it.
 
 //go:build darwin
 

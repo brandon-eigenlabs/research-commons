@@ -876,8 +876,12 @@ a review was exit 3 (`ledger-disconnected`), nothing written. This app version s
 message as it arrives: it answers each chunk only after the holder presses on through it, so a
 message of more than about two chunks meets the 10-second wait of a chunk that is not the last
 and fails as `ledger-timeout` (exit 3, nothing signed); later versions read the whole message
-first. Its size limit was therefore not measured. A review abandoned by a process that had gone
-away stopped responding, as above, until the device was restarted.
+first. On one such message (1,500 bytes, six chunks, traced with long waits) the app answered the last
+chunk with a bare `9000`, no signature, while text was still unshown, and the review then froze once
+the process had gone, until the device was restarted. Its size limit was therefore not measured.
+The connector's timeouts are left as they are: such a failure signs nothing. The drilled versions
+are Ethereum app 1.19.3 (Linux) and 1.10.3 (macOS); no minimum version is stated, since where the
+app began reading the whole message first has not been bisected.
 `key sign --ledger` prints, as its last line before the device is asked, that the review is
 now on the device. An interrupt (SIGINT or SIGTERM) while the device waits for the holder,
 in `key sign --ledger` or `key show --ledger --ledger-confirm`, prints "a review may still

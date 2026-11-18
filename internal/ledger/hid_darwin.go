@@ -23,6 +23,9 @@ const HIDBuilt = true
 // when it changes, so the port asks the transport for a fresh channel each exchange (ChannelPort): the device echoes
 // the channel, and no answer equals the report before it.
 
+// syscall.syscall9 is the runtime's call into a C function with up to nine integer arguments, the one x/sys/unix
+// uses on darwin. Checked against go1.27.2; see iokit_darwin_arm64.s.
+//
 //go:linkname syscall_syscall9 syscall.syscall9
 func syscall_syscall9(fn, a1, a2, a3, a4, a5, a6, a7, a8, a9 uintptr) (r1, r2 uintptr, err syscall.Errno)
 
