@@ -880,10 +880,26 @@ emulator, accepts about 7.6 KB of printable text (about 5.1 KB when the display 
 limit set by its memory that may differ on a device, so the
 tool leaves the decision to the app rather than refusing at a guessed size.
 
-YubiKey 5 is an **untested family**: exact variant/firmware and interface matter;
-Ed25519 PIV support must be established, not inferred from the family name (5.7+
-capability is not every YubiKey 5). WebAuthn assertions or OpenPGP packets do not replace
-the required raw proof. MetaMask EOA testing must use synthetic/test accounts. Unsupported
+**YubiKey 5, tested by hand through the package (#250).** On a YubiKey 5C, firmware 5.4.3,
+the route is the **OpenPGP applet**, not PIV: PIV has Ed25519 only from firmware 5.7 and no
+secp256k1 at all, while the OpenPGP signature slot offers both curves (Yubico states 5.2.3 and
+later for OpenPGP elliptic curves; only 5.4.3 was tested). With a key generated in that slot,
+driven by Yubico's own library, an inception was prepared, signed on the card and completed for
+each algorithm, and `fsck` was clean: for `ed25519` the card signs the PAE bytes themselves (pure
+Ed25519, no prehash; 3,055 bytes signed, the library's command-size cap above that), and its
+64-byte signature is the CLI's form unchanged; for `eip191-secp256k1` the card signs the
+EIP-191 digest the host computes, and the host puts the result in the stored form (low `s`, `v`
+recovered against the card's public key). No connector is built (L-07); #250 has the script as a
+recipe. Two custody points differ from the Ledger. **The card signs blind:** it has no display, so
+the only review is `package show --expect-pae-sha256` on the machine the card is plugged into,
+and that machine must be trusted, which a Ledger's own screen avoids. **There is no backup under
+`fixed-root-v1`:** a key generated on the card cannot leave it, so a lost card is a lost
+identity. The two choices are on-card generation (optionally with the card's attestation that
+the key was generated there) or generation offline with a backup, imported to the card, which
+gives up on-card generation. A touch policy on the signature key proves presence, not informed
+approval. Other YubiKey models, firmware and interfaces remain untested. WebAuthn assertions or
+OpenPGP packets do not replace the required raw proof: the card's raw signature is used, never
+an OpenPGP packet. MetaMask EOA testing must use synthetic/test accounts. Unsupported
 signing must fail, not silently change algorithm/preimage. A valid signature does not
 prove safe informed approval or custody quality. GitHub can transport unsigned packages
 and logs without holding a root; a secret-bearing workflow is optional, user-owned,

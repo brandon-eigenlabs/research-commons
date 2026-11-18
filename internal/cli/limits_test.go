@@ -174,7 +174,7 @@ var limits = []limit{
 	},
 	{
 		id:  "L-07",
-		gap: "The only hardware connector is a Ledger device running the Ethereum app (`eip191-secp256k1`, through `key sign --ledger`); no other device or wallet is driven",
+		gap: "The only hardware connector is a Ledger device running the Ethereum app (`eip191-secp256k1`, through `key sign --ledger`); no other device or wallet is driven. A YubiKey 5 (its OpenPGP applet) already signs by hand through the external-signing package (#250)",
 		sources: []limitSource{
 			{file: "docs/DESIGN-notes-fixed-root-identity.md", says: "no other hardware or wallet connector is built."},
 			{file: "docs/DESIGN-notes-fixed-root-identity.md", says: "A key file signer is not a hardware or wallet connector."},
