@@ -126,6 +126,8 @@ func Main(argv []string, env *Env) (code int) {
 	if obj != nil {
 		if jsonOut {
 			env.Stdout.Write(encodeJSON(obj))
+		} else if obj.text != nil {
+			io.WriteString(env.Stdout, obj.text(termWidth(env)))
 		} else {
 			io.WriteString(env.Stdout, human(obj))
 		}
@@ -231,6 +233,26 @@ func dispatch(argv []string, env *Env) (*Obj, int, error) {
 	}
 	pre, prob := split(argv, anyFlag)
 	if prob != nil {
+		// the command is not known yet: name it in the hint when the words given (an option's value may
+		// precede it) spell one
+		if prob.Slug == "unknown-option" {
+			var words []string
+			for _, a := range argv {
+				if a == "--" {
+					break
+				}
+				if !strings.HasPrefix(a, "-") || a == "-" {
+					words = append(words, a)
+				}
+			}
+			for len(words) > 0 {
+				if c, _ := lookup(words); c != nil {
+					prob.Next = unknownOptionHint(c)
+					break
+				}
+				words = words[1:]
+			}
+		}
 		return nil, 0, prob
 	}
 	if _, ok := pre.flags["version"]; ok && len(pre.words) == 0 {
@@ -251,14 +273,14 @@ func dispatch(argv []string, env *Env) (*Obj, int, error) {
 				return outputsObj(topic[0]), ExitOK, nil
 			}
 			return nil, 0, usage("unknown-command", "unknown command", "there is no such command; nothing was done",
-				"invocation", "run commons help to list the commands", strings.Join(topic, " "))
+				"invocation", unknownCommandHint(topic), strings.Join(topic, " "))
 		}
 		return helpObj(c), ExitOK, nil
 	}
 	cmd, n := lookup(pre.words)
 	if cmd == nil {
 		return nil, 0, usage("unknown-command", "unknown command", "there is no such command; nothing was done",
-			"invocation", "run commons help to list the commands", pre.words[0])
+			"invocation", unknownCommandHint(pre.words), pre.words[0])
 	}
 	// second pass: only this command's flags and the global ones
 	own := func(n string) (Flag, bool) {
@@ -271,6 +293,9 @@ func dispatch(argv []string, env *Env) (*Obj, int, error) {
 	}
 	p, prob := split(argv, own)
 	if prob != nil {
+		if prob.Slug == "unknown-option" {
+			prob.Next = unknownOptionHint(cmd)
+		}
 		return nil, 0, prob
 	}
 	if _, ok := p.flags["help"]; ok {
@@ -540,7 +565,8 @@ func helpObj(c *Command) *Obj {
 			gl = append(gl, newObj().set("option", textV("--"+f.Name)).set("summary", textV(f.Help)))
 		}
 		o.set("global_options", gl)
-		o.set("more", textV("commons help <command> · commons help outputs (state tokens) · commons help exits (exit codes)"))
+		o.set("more", textV(helpMore))
+		o.text = func(w int) string { return renderTopHelp(w) }
 		return o
 	}
 	o := newObj().set("usage", textV(synopsis(c))).set("summary", textV(c.Summary))
@@ -554,6 +580,7 @@ func helpObj(c *Command) *Obj {
 	if len(fl) > 0 {
 		o.set("options", fl)
 	}
+	o.text = func(w int) string { return renderCommandHelp(c, w) }
 	return o
 }
 
@@ -564,12 +591,14 @@ func outputsObj(which string) *Obj {
 		for _, r := range ExitRows() {
 			l = append(l, newObj().set("exit", textV(r[0])).set("name", textV(r[1])).set("meaning", textV(r[2])))
 		}
+		o.text = renderExitsHelp
 		return o.set("exit_codes", l)
 	}
 	var l listV
 	for _, t := range vocabulary {
 		l = append(l, newObj().set("token", textV(t.Word)).set("kind", textV(t.Kind)).set("meaning", textV(t.Meaning)))
 	}
+	o.text = renderOutputsHelp
 	return o.set("state_tokens", l)
 }
 
