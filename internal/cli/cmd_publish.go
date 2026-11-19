@@ -186,7 +186,7 @@ func init() {
 	flags = append(flags, extFlags...)
 	Register(&Command{Name: "publish", Examples: []string{"commons publish --store store --key me.key --kind authored --content data.csv --media-type text/csv"}, Summary: "sign and commit a statement (authored with its bytes, holds, describes, retracts, or a draft)",
 		Store: true, Writes: true, Flags: flags, Prepare: preparePublish, Run: publishCmd,
-		Help: "Signs with --key (or $" + KeyEnv + ") and commits through the store's journal: the blob and its statements land together or not at all. A draft is never stored unsigned. Your log's next seq and prev come from the statements this store holds; a FORK in your log is refused until you name --prev. --intended-for runs the named edition's rules first and refuses on fail. With availability withheld and content under " + strconv.Itoa(WithheldWarnBelow) + " bytes it warns that short content may be enumerable against its hash (a heuristic; include a nonce) and proceeds; the warning is not recorded. A rotate_key draft is signed as written: none of `commons rotate`'s checks run (successor, key events already held, merged tips), so the way out after a compromise stays open; it warns and proceeds. With --as <identity> --grant <id> the statement acts for a fixed-root identity (rc/2, the actor in the signed envelope): it is refused, nothing signed, unless the identity evaluator over the statements this store holds plus this line reads the act eligible (exit 2 when it is denied, naming why; exit 3 when it cannot decide, e.g. the grant or the identity is not held). A collection's genesis (a draft) may name typed controllers ({key: K} and/or {identity: I}): it is then signed rc/2 (body marker {}, no actor) from a bare key, and refused with nothing signed unless it reads valid (sorted and duplicate-free, a rule its controllers can satisfy). Controllers that are all plain keys stay rc/1. An edition naming an identity controller is refused (KNOWN-LIMITS L-21), and an act for an identity on an edition (--as) needs a grant carrying `edition` for a resource that already exists. A holds is written beside an authored or observed whose bytes this store keeps (--no-holds withholds it); it stays your key's own (rc/1): your key holds the bytes." + extHelp + " Only an act (--as) is prepared; an authored act needs --no-holds, and its eligibility is read at --complete."})
+		Help: "Signs with --key (or $" + KeyEnv + ") and commits through the store's journal: the blob and its statements land together or not at all. A draft is never stored unsigned. Your log's next seq and prev come from the statements this store holds; a FORK in your log is refused until you name --prev. --intended-for runs the named edition's rules first and refuses on fail. With availability withheld and content under " + strconv.Itoa(WithheldWarnBelow) + " bytes it warns that short content may be enumerable against its hash (a heuristic; include a nonce) and proceeds; the warning is not recorded. A rotate_key draft is signed as written: none of `commons rotate`'s checks run (successor, key events already held, merged tips), so the way out after a compromise stays open; it warns and proceeds. With --as <identity> --grant <id> the statement acts for a fixed-root identity (rc/2, the actor in the signed envelope): it is refused, nothing signed, unless the identity evaluator over the statements this store holds plus this line reads the act eligible (exit 2 when it is denied, naming why; exit 3 when it cannot decide, e.g. the grant or the identity is not held). A collection's genesis (a draft) may name typed controllers ({key: K} and/or {identity: I}): it is then signed rc/2 (body marker {}, no actor) from a bare key, and refused with nothing signed unless it reads valid (sorted and duplicate-free, a rule its controllers can satisfy). Controllers that are all plain keys stay rc/1. A bare key's edition (or withdraw_approval) of a resource whose genesis is rc/2 is written rc/2, marker only, so it shares the edition id with an identity's approval of the same body; the genesis must be held (exit 3 otherwise), and an edition of a resource whose genesis is rc/1 stays rc/1. An edition naming an identity controller is refused (KNOWN-LIMITS L-21), and an act for an identity on an edition (--as) needs a grant carrying `edition` for a resource that already exists. A holds is written beside an authored or observed whose bytes this store keeps (--no-holds withholds it); it stays your key's own (rc/1): your key holds the bytes." + extHelp + " Only an act (--as) is prepared; an authored act needs --no-holds, and its eligibility is read at --complete."})
 	tflags := append(slices.Clone(writerFlags),
 		Flag{Name: "name", Value: "text", Help: "a new task's name"},
 		Flag{Name: "task", Value: "id", Help: "an existing task (its genesis id): publish a new edition after its current one", Check: checkIDFlag},
@@ -773,6 +773,21 @@ func publishCmd(c *Ctx) (*Obj, int, error) {
 			return nil, 0, writeRefused(err)
 		}
 		drafts[0] = d
+	} else if p.kind == "edition" || p.kind == "withdraw_approval" {
+		// a bare key's approval (or withdrawal) about a resource whose genesis is rc/2 is written rc/2, marker only, no
+		// actor (identity profile §2.3), so it shares the edition id with an identity's approval of the same body
+		// (§2.2); a resource whose genesis is rc/1 stays rc/1, byte for byte
+		typed, prob := v.typedResource(body)
+		if prob != nil {
+			return nil, 0, prob
+		}
+		if typed && !keyControllerChange(body) {
+			d, err := wire.MarkerOnlyDraft(drafts[0])
+			if err != nil {
+				return nil, 0, writeRefused(err)
+			}
+			drafts[0] = d
+		}
 	}
 	// the holds beside the claim: only for bytes this unit installs or this store already keeps (an observed whose
 	// bytes this store does not keep has nothing to serve)
@@ -806,6 +821,44 @@ func publishCmd(c *Ctx) (*Obj, int, error) {
 	}
 	// the pre-pin state was resolved from the statements this store holds: the output carries the view's scope
 	return v.scopedResult(commitUnit(c, out, "publish", sts, blobs, p.content, h))
+}
+
+// typedResource reports whether the resource an edition or withdraw_approval body names has an rc/2 genesis, read
+// from the genesis this store holds (never from the draft). A body naming no statement id is left to the reader,
+// which refuses it; a resource whose genesis is not held is refused, exit 3, nothing signed: the major cannot be
+// guessed, and the wrong one would approve another edition.
+func (v *view) typedResource(body *canon.Object) (bool, *Problem) {
+	res, _ := body.Members["resource"].(canon.String)
+	if !isID(string(res)) {
+		return false, nil
+	}
+	pl, ok := v.r.Statement(string(res))
+	if !ok || pl.St == nil || pl.St.Kind != "genesis" {
+		return false, &Problem{Slug: "resource-not-held", Title: "the resource's genesis is not held here", Class: refusal.Policy, Scope: "draft field resource",
+			Detail: "the major an approval is written in follows the genesis (rc/1 or rc/2), and no genesis with that id is in this store; nothing was signed or appended",
+			Next:   "fetch the resource, then publish again", Peer: string(res), Exit: ExitCouldNot}
+	}
+	return pl.St.RC == "rc/"+strconv.Itoa(wire.CandidateMajor), nil
+}
+
+// keyControllerChange reports whether an edition body changes the controllers to plain key strings (the rc/1 form).
+// The rc/2 schema reads controllers only as typed subjects, so no identity's approval can share that body: it stays
+// rc/1, as it was written before rc/2 resources were routed by their genesis.
+func keyControllerChange(body *canon.Object) bool {
+	c, _ := body.Members["contents"].(*canon.Object)
+	if c == nil {
+		return false
+	}
+	a, ok := c.Members["controllers"].(canon.Array)
+	if !ok || len(a) == 0 {
+		return false
+	}
+	for _, e := range a {
+		if _, typed := e.(*canon.Object); typed {
+			return false
+		}
+	}
+	return true
 }
 
 // typedControllers reports whether a genesis body's controllers carry a typed subject (an object member, {key: K} or
