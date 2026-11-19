@@ -940,8 +940,9 @@ what it buys depends on the rule:
 * **`any_one`** gives *recovery*, not prevention. A thief holding R can fork the resource and
   rewrite its controllers on that branch, but once R is revoked nothing the thief did as I
   counts, and the second subject alone publishes the next edition (from the genesis, or from
-  the last edition it also approved), dropping I (naming a successor identity in its place is
-  KNOWN-LIMITS L-21: a key can be named today). The cost is that
+  the last edition it also approved), dropping I or naming a successor identity in its place
+  (the resource's genesis is `rc/2`, so the edition is written `rc/2` and may name an identity).
+  The cost is that
   either subject alone can also capture the resource, so a theft of the *second* subject is
   answered by that key's own revocation with `last_good`.
 * **`k_of_n` with k = 2** gives *prevention*: no single stolen subject authorizes an edition.

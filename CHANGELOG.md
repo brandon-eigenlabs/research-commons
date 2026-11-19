@@ -84,6 +84,10 @@ effect until 1.0.0. See `docs/RELEASING.md` for the bump rules and release steps
   the claims model, with a table mapping the alpha template's fields. Docs only.
 - Documentation: installing from source is `go install ./cmd/commons` from a clone (no branch switch, since `next` is the
   default branch); `go build` stays as the in-place alternative. No byte, identifier or behaviour change.
+- Documentation: KNOWN-LIMITS L-21 is narrowed to what it is since #257: only a collection created key-controlled
+  (genesis `rc/1`) cannot be moved to identity control. An identity-controlled collection's editions may name identity
+  controllers (a collaborator's identity, or a successor identity after a root compromise), as `publish --help`,
+  `docs/COLLABORATING.md` and the identity note §8 now say (#258). No byte, identifier or behaviour change.
 - Documentation: the fixed-root identity note's device paragraph records a YubiKey 5 test (#250): on firmware 5.4.3 the
   OpenPGP applet, not PIV, signs both algorithms by hand through the external-signing package, with the custody caveats
   (blind signing; no backup under `fixed-root-v1`). KNOWN-LIMITS L-07 mentions it and stays open. No byte, identifier or
