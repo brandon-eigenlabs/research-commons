@@ -474,14 +474,14 @@ var limits = []limit{
 	},
 	{
 		id:  "L-21",
-		gap: "A collection's controllers cannot be changed to name an identity from the CLI: the writer refuses an edition whose `contents.controllers` name an identity (a bare key's edition is rc/1, and an edition is not a raw-key statement of the identity profile), although the reader resolves a typed identity controller. So a key-controlled collection cannot be moved to identity control; create an identity-controlled collection instead: a collection genesis naming an identity controller is written (`publish --draft`, rc/2), and a key acting for the identity under a grant carrying `edition` for it publishes its editions (`publish --as`)",
+		gap: "A key-controlled collection cannot be moved to identity control from the CLI: for a collection whose genesis names only plain keys (rc/1), the writer refuses an edition whose `contents.controllers` name an identity (its editions are rc/1, whose controllers are keys), although the reader resolves a typed identity controller. Create an identity-controlled collection instead: a collection genesis naming an identity controller is written (`publish --draft`, rc/2), a key acting for the identity under a grant carrying `edition` for it publishes its editions (`publish --as`), and those editions may name identity controllers (a collaborator's identity, or a successor identity after a root compromise)",
 		sources: []limitSource{
 			{file: "CHANGELOG.md", says: "KNOWN-LIMITS L-21 now covers that case"},
 			{file: "docs/COLLABORATING.md", says: "the CLI refuses an edition whose `controllers` name an identity"},
-			{help: []string{"publish"}, says: "An edition naming an identity controller is refused (KNOWN-LIMITS L-21)"},
+			{help: []string{"publish"}, says: "refused for a key-controlled one (KNOWN-LIMITS L-21)"},
 		},
 		probe:  "`publish --draft` of an edition whose `contents.controllers` is a typed `{identity: …}` exits 2 (`controllers[0] is not a key`) and changes nothing",
-		closes: "an edition naming an identity controller, written by the CLI (planned for 1.1)",
+		closes: "an edition moving a key-controlled collection to identity control, written by the CLI (planned for 1.1)",
 		open: func(t *testing.T) (bool, string) {
 			h := newIDHome(t, wire.AlgEd25519)
 			ident := string(h.ok("identity", "new").Members["identity"].(canon.String))

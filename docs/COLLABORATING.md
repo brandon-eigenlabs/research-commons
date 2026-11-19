@@ -112,8 +112,11 @@ grant from the identity's root that carries `edition` for that collection: `iden
 A plain key listed beside the identity (`{"key": ...}`) approves the same draft bare (`publish --draft <edition.json>`):
 its edition is written `rc/2`, marker only, so under `k_of_n` the identity's approval and the key's approval of one draft
 are approvals of one edition.
-Changing an existing collection's controllers to name an identity is not possible from the CLI (KNOWN-LIMITS L-21): the
-CLI refuses an edition whose `controllers` name an identity, so create the identity-controlled collection from the start.
+An edition of an identity-controlled collection may change its controllers to name an identity too: a collaborator's
+identity added beside yours, or, after a root compromise, a successor identity named by the second subject. A collection
+created key-controlled cannot be moved to identity control from the CLI (KNOWN-LIMITS L-21): for a collection whose
+genesis names only plain keys, the CLI refuses an edition whose `controllers` name an identity, so create the
+identity-controlled collection from the start.
 
 `collection.json` shape: see **Collections** in the tool README. It needs `scope`,
 `maintainers` (with your address), `members`, and ideally `task_criteria` and
