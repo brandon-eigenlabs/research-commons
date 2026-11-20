@@ -199,7 +199,9 @@ func init() {
 
 // pubPrep is what Prepare read.
 type pubPrep struct {
-	key     *loadedKey
+	key *loadedKey
+	// ledger, set by revoke and rotate with --ledger: the device signs, and key is nil until the device is open
+	ledger  *ledgerOpts
 	kind    string
 	body    *canon.Object // the draft body, without content when --content fills it
 	content string        // the content file, "" when none
@@ -247,6 +249,10 @@ func setMember(o *canon.Object, k string, v canon.Value) {
 func prepareCommon(c *Ctx, p *pubPrep) *Problem {
 	if x := extOf(c); x != nil {
 		p.key = &loadedKey{Key: x.key} // external signing: the tool holds no key
+	} else if o, prob := ledgerOptions(c); prob != nil {
+		return prob
+	} else if o != nil {
+		p.ledger = o // revoke and rotate --ledger: the device is opened when the command runs
 	} else {
 		k, prob := signingKey(c)
 		if prob != nil {

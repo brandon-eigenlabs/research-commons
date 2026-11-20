@@ -832,11 +832,15 @@ cannot hold (it answers after the last chunk), a request the app refuses, a disc
 a timeout (`--ledger-timeout`, default 10 minutes for the approval, 10 seconds for every
 other exchange) is exit 3; each writes nothing. The package flow stays the boundary: `--complete`,
 `identity` and `publish` never open a device, so the device never sits on the store's
-machine. Only identity statements and acts for an identity reach a device: a package carries
-nothing else, and `revoke` and `rotate` sign with a key file only. So a key held on a device
-cannot sign its own `revoke_key` or `rotate_key` (a device-held root cannot be revoked from the
-tool), nor a bare-key statement such as a controller key's edition approval (KNOWN-LIMITS L-22,
-#266). Transport: USB HID on Linux (hidraw, Ledger framing); the Speculos emulator's APDU
+machine. The one exception is a key event: `revoke --ledger` and `rotate --ledger` sign the
+key's own `revoke_key` or `rotate_key` on the device, the same `personal_sign` over the PAE,
+after the holder reviews it there (#266). A key event has no package route, so for these two
+commands the store and the device are on one machine; this is how a device-held root revokes
+itself, or signs an escrowed revocation right after its inception. A dry run asks the device
+nothing. The line is byte for byte the one the key's file would sign. What still reaches no
+device is a bare-key statement (a controller key's edition approval, say), and a key event for a
+key held anywhere else (another device, an air-gapped machine): a package carries identity
+statements and acts for an identity only (KNOWN-LIMITS L-22, #266). Transport: USB HID on Linux (hidraw, Ledger framing); the Speculos emulator's APDU
 port (`--ledger-device tcp:<host>:<port>`, labelled an emulator: no hardware protects its
 key). USB on macOS and Windows is not built.
 
