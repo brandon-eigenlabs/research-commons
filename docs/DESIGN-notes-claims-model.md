@@ -436,6 +436,16 @@ Rules:
 - **Identical bytes mean different things per class.** For most classes, a second key publishing the same bytes
   is a copy. Only in the exact-bytes class is re-reading the same source a corroboration, and it still needs
   its own `observed` statement with its own capture record.
+- **An exact-bytes referent determines its bytes.** Two exact-bytes observations at one block hash with different
+  bytes contradict each other at any depth (the reader compares them by byte equality, and the block cannot be
+  revised). So the class fits only content the block hash alone determines: the block, its receipts, a state
+  proof. An extraction from the block (one contract's logs over a range, a filtered, parsed or re-serialized
+  view) also depends on the query and the serialization, which the referent does not pin. Two honest
+  extractions then read as a contradiction. Such a capture is `source` (its request log pins the query) or
+  `method`. It stays exact-bytes only when its publisher fixes one extraction per referent (one blob per block
+  hash) and publishes the query and the canonical form beside it: a second observer following that form
+  corroborates by byte equality, and any other extraction at that hash reads as a contradiction, which is the
+  cost the publisher accepts. An exact-bytes referent that also pins an extraction is not part of this format.
 
 #### 5.3.1a Source profiles
 
