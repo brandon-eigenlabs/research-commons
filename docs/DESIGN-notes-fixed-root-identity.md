@@ -832,7 +832,11 @@ cannot hold (it answers after the last chunk), a request the app refuses, a disc
 a timeout (`--ledger-timeout`, default 10 minutes for the approval, 10 seconds for every
 other exchange) is exit 3; each writes nothing. The package flow stays the boundary: `--complete`,
 `identity` and `publish` never open a device, so the device never sits on the store's
-machine. Transport: USB HID on Linux (hidraw, Ledger framing); the Speculos emulator's APDU
+machine. Only identity statements and acts for an identity reach a device: a package carries
+nothing else, and `revoke` and `rotate` sign with a key file only. So a key held on a device
+cannot sign its own `revoke_key` or `rotate_key` (a device-held root cannot be revoked from the
+tool), nor a bare-key statement such as a controller key's edition approval (KNOWN-LIMITS L-22,
+#266). Transport: USB HID on Linux (hidraw, Ledger framing); the Speculos emulator's APDU
 port (`--ledger-device tcp:<host>:<port>`, labelled an emulator: no hardware protects its
 key). USB on macOS and Windows is not built.
 
