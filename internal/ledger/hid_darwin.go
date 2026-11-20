@@ -186,7 +186,7 @@ type iokitPort struct {
 	svc      uintptr // io_service_t of the device, to notice an unplug
 	queue    uintptr // IOHIDQueueRef
 	closed   bool
-	writing  bool // a SetReport is in flight: Close leaves the release to it
+	writing  int // SetReports in flight: Close leaves the release to the last of them
 	released bool
 	deadline time.Time
 	lastSeen uint16 // the channel of the last input report (the element's cached value at open)
@@ -279,21 +279,22 @@ func (p *iokitPort) Write(b []byte) (int, error) {
 		return 0, errors.New("an empty report")
 	}
 	// SetReport can block on the device, so it runs outside the lock: an interrupt's Close must not wait behind it.
-	// While it runs the device stays retained (writing), and Close leaves the release to this call.
+	// While any runs the device stays retained (writing counts them; Exchange writes one at a time today, the count
+	// keeps this right if writes ever overlap), and Close leaves the release to the last to finish.
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
 		return 0, errClosed
 	}
-	p.writing = true
+	p.writing++
 	dev := p.dev
 	p.mu.Unlock()
 	r := ret32(call(fnIOHIDDeviceSetReport, dev, kIOHIDReportTypeOutput, uintptr(b[0]), uintptr(unsafe.Pointer(&b[1])), uintptr(len(b)-1)))
 	runtime.KeepAlive(b)
 	p.mu.Lock()
-	p.writing = false
+	p.writing--
 	closed := p.closed
-	if closed {
+	if closed && p.writing == 0 {
 		p.release()
 	}
 	p.mu.Unlock()
@@ -389,7 +390,7 @@ func (p *iokitPort) Close() error {
 		return nil
 	}
 	p.closed = true
-	if !p.writing {
+	if p.writing == 0 {
 		p.release()
 	}
 	return nil
