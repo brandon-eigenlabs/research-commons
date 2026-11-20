@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"runtime"
 	"time"
 
 	"github.com/research-common/research-commons/internal/canon"
@@ -142,17 +143,17 @@ func ledgerProblem(err error, what string) *Problem {
 	case ledger.TooLong:
 		p.Title, p.Next = "the device cannot show this message", "this statement is too long to review on the device; sign it with a key file, or write its PAE with package show --pae-out for another signer"
 	case ledger.NoDevice, ledger.MultipleDevice:
-		p.Title, p.Next = "no usable Ledger device", "connect and unlock the device and open the Ethereum app; name it with --ledger-device when several are attached"
+		p.Title, p.Next = "no usable Ledger device", "connect and unlock the device and open the Ethereum app; "+severalHint()
 	case ledger.Unusable:
-		p.Title, p.Next = "the device cannot be opened", "give your user access to the device (Ledger's udev rules on Linux), reconnect it, then run the command again"
+		p.Title, p.Next = "the device cannot be opened", "give your user access to the device (Ledger's udev rules on Linux; on macOS allow the program in System Settings, Privacy & Security), reconnect it, then run the command again"
 	case ledger.Disconnected:
 		p.Title, p.Next = "the device went away", "reconnect and unlock the device, open the Ethereum app, then run the command again"
 	case ledger.Timeout:
-		p.Title, p.Next = "the device did not answer in time", "run the command again and approve or reject on the device within the time allowed"
+		p.Title, p.Next = "the device did not answer in time", "run the command again and approve or reject on the device within the time allowed; if the device was still showing the message, its Ethereum app may be one that shows a long message as it arrives (1.10.3 does): update the app, or sign a short statement"
 	case ledger.NotBuilt:
 		p.Title, p.Next = "the USB connector is not built for this system", "sign the PAE bytes with package show --pae-out and your own signer, or use an emulator (tcp:<host>:<port>)"
 	case ledger.BadDeviceSpec:
-		p.Title, p.Next, p.Exit, p.Class = "not a device", "give --ledger-device /dev/hidrawN or tcp:<host>:<port>", ExitDidNotStart, refusal.Intrinsic
+		p.Title, p.Next, p.Exit, p.Class = "not a device", deviceSpecHint(), ExitDidNotStart, refusal.Intrinsic
 	case ledger.Busy:
 		p.Title, p.Next = "the device is busy", "finish or reject the pending review on the device, then run the command again"
 	case ledger.Interrupted:
@@ -395,4 +396,20 @@ func writeSignature(c *Ctx, res *Obj, st *wire.Statement, out, signature string)
 	}
 	return res.set("written", peerV(out)).
 		set("next", textV("carry the signature file back and run "+completeCommand(st))), ExitOK, nil
+}
+
+// severalHint and deviceSpecHint name the device spec forms this system has: macOS names no USB device, so a user
+// there attaches only one Ledger.
+func severalHint() string {
+	if runtime.GOOS == "darwin" {
+		return "on macOS a USB device is not named: attach only one Ledger"
+	}
+	return "name it with --ledger-device when several are attached"
+}
+
+func deviceSpecHint() string {
+	if runtime.GOOS == "darwin" {
+		return "give no --ledger-device (on macOS the one Ledger attached by USB is used), or tcp:<host>:<port> for an emulator"
+	}
+	return "give --ledger-device /dev/hidrawN or tcp:<host>:<port>"
 }

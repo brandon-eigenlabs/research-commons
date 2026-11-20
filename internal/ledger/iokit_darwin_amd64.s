@@ -2,11 +2,10 @@
 //
 // This is golang.org/x/sys/unix's pattern for calling libSystem without cgo (zsyscall_darwin_*.s): the linker
 // resolves each go:cgo_import_dynamic symbol, a JMP trampoline gives it an address, and hid_darwin.go calls it
-// through the runtime's syscall.syscall9. Checked against go1.27.2. The syscall9 route is reachable only while the
-// toolchain keeps that linkname open (it does for x/sys); if a Go release closes it, the build fails here, not at run
+// through the runtime's syscall.syscall6 (hid_darwin.go's call, which marks its arguments go:uintptrescapes). Checked
+// against go1.27.2 and go1.26.0. The syscall6 route is reachable only while the toolchain keeps that linkname open
+// (go.dev/issue/67401); if a Go release closes it, the build fails here, not at run
 // time, and CI's darwin cross-build (go.yml, static build) catches it.
-
-//go:build darwin
 
 #include "textflag.h"
 

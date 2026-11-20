@@ -99,7 +99,7 @@ jobs:
         run: |
           for arch in amd64 arm64; do
             CGO_ENABLED=0 GOOS=darwin GOARCH=$arch go build -trimpath -o /dev/null ./cmd/commons
-            CGO_ENABLED=0 GOOS=darwin GOARCH=$arch go vet ./internal/ledger/
+            CGO_ENABLED=0 GOOS=darwin GOARCH=$arch go vet ./...
           done
 
   test-sandbox-oci:

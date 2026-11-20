@@ -23,20 +23,32 @@ const HIDBuilt = true
 // when it changes, so the port asks the transport for a fresh channel each exchange (ChannelPort): the device echoes
 // the channel, and no answer equals the report before it.
 
-// syscall.syscall9 is the runtime's call into a C function with up to nine integer arguments, the one x/sys/unix
-// uses on darwin. Checked against go1.27.2; see iokit_darwin_arm64.s.
+// syscall.syscall6 is the runtime's call into a C function with up to six integer arguments, the variant the
+// runtime keeps linkname-open for packages outside the standard library (go.dev/issue/67401). Checked against
+// go1.27.2 and go1.26.0; see iokit_darwin_arm64.s.
 //
-//go:linkname syscall_syscall9 syscall.syscall9
-func syscall_syscall9(fn, a1, a2, a3, a4, a5, a6, a7, a8, a9 uintptr) (r1, r2 uintptr, err syscall.Errno)
+//go:linkname syscall_syscall6 syscall.syscall6
+func syscall_syscall6(fn, a1, a2, a3, a4, a5, a6 uintptr) (r1, r2 uintptr, err syscall.Errno)
 
-// call runs the C function at fn with up to nine integer or pointer arguments and returns its integer or pointer
-// result. Every function bound here takes and returns only such values.
+// call runs the C function at fn with up to six integer or pointer arguments (the widest bound here,
+// IOHIDDeviceSetReport, takes five) and returns its integer or pointer result.
+//
+// This is the one place the binding differs from x/sys/unix, which converts each pointer inside the call expression
+// of a body-less function. call has a Go body, so without go:uintptrescapes a buffer or out-parameter passed as
+// uintptr(unsafe.Pointer(&x)) could stay on the goroutine stack and be moved by a stack copy at call's prologue,
+// leaving C to read or write the old address. The directive makes every such argument escape to the heap.
+//
+//go:uintptrescapes
 func call(fn uintptr, args ...uintptr) uintptr {
-	var a [9]uintptr
+	var a [6]uintptr
 	copy(a[:], args)
-	r, _, _ := syscall_syscall9(fn, a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8])
+	r, _, _ := syscall_syscall6(fn, a[0], a[1], a[2], a[3], a[4], a[5])
 	return r
 }
+
+// ret32 is the 32-bit C return (IOReturn, IOHIDElementType, a report size or count) of a call: AAPCS64 does not
+// guarantee the upper half of the return register for a 32-bit value.
+func ret32(r uintptr) uint32 { return uint32(r) }
 
 const (
 	kCFStringEncodingUTF8  = 0x08000100
@@ -46,6 +58,8 @@ const (
 	kIOHIDElementTypeInputMisc = 1
 	kIOHIDElementTypeInputAxis = 3
 	kIOReturnSuccess           = 0
+	kIOReturnNotPermitted      = 0xe00002e2
+	kIOReturnExclusiveAccess   = 0xe00002c5
 	queueDepth                 = 128
 	pollFast                   = time.Millisecond
 	pollSlow                   = 20 * time.Millisecond
@@ -113,12 +127,13 @@ func listLedgers() ([]macDevice, func()) {
 		}
 		pro, _ := intProperty(d, "ProductID")
 		page, _ := intProperty(d, "PrimaryUsagePage")
+		node := "USB (IOKit)"
 		var id uint64
-		if svc := call(fnIOHIDDeviceGetService, d); svc != 0 {
-			call(fnIORegistryEntryGetRegistryEntryID, svc, uintptr(unsafe.Pointer(&id)))
+		if svc := call(fnIOHIDDeviceGetService, d); svc != 0 && ret32(call(fnIORegistryEntryGetRegistryEntryID, svc, uintptr(unsafe.Pointer(&id)))) == kIOReturnSuccess {
+			node = "USB (IOKit registry entry 0x" + strconv.FormatUint(id, 16) + ")"
 		}
 		out = append(out, macDevice{ref: d, HIDNode: HIDNode{
-			Node:    "USB (IOKit registry entry 0x" + strconv.FormatUint(id, 16) + ")",
+			Node:    node,
 			Product: uint16(pro),
 			Model:   ModelOf(uint16(pro)),
 			App:     page == usagePageApp,
@@ -128,7 +143,8 @@ func listLedgers() ([]macDevice, func()) {
 }
 
 // openHID opens the one Ledger APDU interface attached. macOS has no device node to name, so a named spec is refused
-// by CheckSpec before this is reached; several devices attached is a failure asking for one to be disconnected.
+// here (CheckSpec accepts /dev/hidrawN on every system); several devices attached is a failure asking for one to be
+// disconnected.
 func openHID(named string) (*Device, error) {
 	if named != "" {
 		return nil, &Error{Slug: BadDeviceSpec, Detail: "on macOS a USB device is not named: attach one Ledger and give no device"}
@@ -146,9 +162,11 @@ func openHID(named string) (*Device, error) {
 		}
 		return nil, err
 	}
+	// PickHID succeeded, so exactly one APDU interface is listed: take it by that, not by its label, which two
+	// devices without a registry id would share
 	var dev uintptr
 	for _, d := range devs {
-		if d.HIDNode == n {
+		if d.App {
 			dev = d.ref
 		}
 	}
@@ -168,6 +186,8 @@ type iokitPort struct {
 	svc      uintptr // io_service_t of the device, to notice an unplug
 	queue    uintptr // IOHIDQueueRef
 	closed   bool
+	writing  bool // a SetReport is in flight: Close leaves the release to it
+	released bool
 	deadline time.Time
 	lastSeen uint16 // the channel of the last input report (the element's cached value at open)
 	lastSent uint16 // the channel of the last request
@@ -178,8 +198,14 @@ var errClosed = errors.New("the device was closed")
 
 // openPort opens dev, retaining it: the caller may then release the device set it came from.
 func openPort(dev uintptr) (*iokitPort, error) {
-	if r := call(fnIOHIDDeviceOpen, dev, 0); r != kIOReturnSuccess {
-		return nil, &Error{Slug: NoDevice, Detail: "the Ledger's USB interface cannot be opened (IOReturn 0x" + strconv.FormatUint(uint64(uint32(r)), 16) + "); close any other app using it (Ledger Live), then try again"}
+	switch r := ret32(call(fnIOHIDDeviceOpen, dev, 0)); r {
+	case kIOReturnSuccess:
+	case kIOReturnNotPermitted:
+		return nil, &Error{Slug: Unusable, Detail: "macOS refused access to the Ledger's USB interface (kIOReturnNotPermitted); allow this program in System Settings, Privacy & Security, then reconnect the device"}
+	case kIOReturnExclusiveAccess:
+		return nil, &Error{Slug: NoDevice, Detail: "another app holds the Ledger's USB interface (kIOReturnExclusiveAccess); close it (Ledger Live), then try again"}
+	default:
+		return nil, &Error{Slug: NoDevice, Detail: "the Ledger's USB interface cannot be opened (IOReturn 0x" + strconv.FormatUint(uint64(r), 16) + "); close any other app using it (Ledger Live), then try again"}
 	}
 	call(fnCFRetain, dev)
 	fail := func(e *Error) (*iokitPort, error) {
@@ -196,9 +222,9 @@ func openPort(dev uintptr) (*iokitPort, error) {
 	var elem uintptr
 	for i := 0; i < int(call(fnCFArrayGetCount, elems)); i++ {
 		e := call(fnCFArrayGetValueAtIndex, elems, uintptr(i))
-		t := call(fnIOHIDElementGetType, e)
+		t := ret32(call(fnIOHIDElementGetType, e))
 		if t >= kIOHIDElementTypeInputMisc && t <= kIOHIDElementTypeInputAxis &&
-			call(fnIOHIDElementGetReportSize, e) == 8 && call(fnIOHIDElementGetReportCount, e) == packetSize {
+			ret32(call(fnIOHIDElementGetReportSize, e)) == 8 && ret32(call(fnIOHIDElementGetReportCount, e)) == packetSize {
 			elem = e
 			break
 		}
@@ -208,7 +234,7 @@ func openPort(dev uintptr) (*iokitPort, error) {
 	}
 	// the channel of the report IOKit last cached: an answer on it would not be delivered
 	var v uintptr
-	if call(fnIOHIDDeviceGetValue, dev, elem, uintptr(unsafe.Pointer(&v))) == kIOReturnSuccess && v != 0 {
+	if ret32(call(fnIOHIDDeviceGetValue, dev, elem, uintptr(unsafe.Pointer(&v)))) == kIOReturnSuccess && v != 0 {
 		if b := valueBytes(v); len(b) >= 2 {
 			p.lastSeen = uint16(b[0])<<8 | uint16(b[1])
 		}
@@ -252,15 +278,30 @@ func (p *iokitPort) Write(b []byte) (int, error) {
 	if len(b) < 1 {
 		return 0, errors.New("an empty report")
 	}
+	// SetReport can block on the device, so it runs outside the lock: an interrupt's Close must not wait behind it.
+	// While it runs the device stays retained (writing), and Close leaves the release to this call.
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	if p.closed {
+		p.mu.Unlock()
 		return 0, errClosed
 	}
-	r := call(fnIOHIDDeviceSetReport, p.dev, kIOHIDReportTypeOutput, uintptr(b[0]), uintptr(unsafe.Pointer(&b[1])), uintptr(len(b)-1))
+	p.writing = true
+	dev := p.dev
+	p.mu.Unlock()
+	r := ret32(call(fnIOHIDDeviceSetReport, dev, kIOHIDReportTypeOutput, uintptr(b[0]), uintptr(unsafe.Pointer(&b[1])), uintptr(len(b)-1)))
 	runtime.KeepAlive(b)
+	p.mu.Lock()
+	p.writing = false
+	closed := p.closed
+	if closed {
+		p.release()
+	}
+	p.mu.Unlock()
+	if closed {
+		return 0, errClosed
+	}
 	if r != kIOReturnSuccess {
-		return 0, errors.New("IOHIDDeviceSetReport returned 0x" + strconv.FormatUint(uint64(uint32(r)), 16))
+		return 0, errors.New("IOHIDDeviceSetReport returned 0x" + strconv.FormatUint(uint64(r), 16))
 	}
 	return len(b), nil
 }
@@ -318,6 +359,9 @@ func (p *iokitPort) poll(b []byte) (int, bool, error) {
 	}
 	defer call(fnCFRelease, v)
 	r := valueBytes(v)
+	if len(r) == 0 {
+		return 0, false, nil // an empty value is not a report: keep waiting (a 0-byte read means "closed" to Exchange)
+	}
 	if len(r) >= 2 {
 		p.lastSeen = uint16(r[0])<<8 | uint16(r[1])
 	}
@@ -326,8 +370,10 @@ func (p *iokitPort) poll(b []byte) (int, bool, error) {
 
 // attached reports whether the device is still in the IO registry (an unplugged device leaves the service plane).
 func (p *iokitPort) attached() bool {
-	if p.svc == 0 {
-		return true
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed || p.svc == 0 {
+		return true // a closed port's next poll reports it closed
 	}
 	plane := append([]byte("IOService"), 0)
 	ok := call(fnIORegistryEntryInPlane, p.svc, uintptr(unsafe.Pointer(&plane[0])))&0xff != 0
@@ -343,9 +389,20 @@ func (p *iokitPort) Close() error {
 		return nil
 	}
 	p.closed = true
+	if !p.writing {
+		p.release()
+	}
+	return nil
+}
+
+// release frees the queue and the device once (called with mu held, after closed is set).
+func (p *iokitPort) release() {
+	if p.released {
+		return
+	}
+	p.released = true
 	call(fnIOHIDQueueStop, p.queue)
 	call(fnCFRelease, p.queue)
 	call(fnIOHIDDeviceClose, p.dev, 0)
 	call(fnCFRelease, p.dev)
-	return nil
 }

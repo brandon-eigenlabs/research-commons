@@ -1,8 +1,6 @@
 // The macOS USB transport's imports. Each function here has a trampoline in iokit_darwin_arm64.s and iokit_darwin_amd64.s
 // (TestIOKitBindingsInStep checks the three files agree).
 
-//go:build darwin
-
 package ledger
 
 import _ "unsafe" // for go:cgo_import_dynamic
