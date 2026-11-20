@@ -34,8 +34,8 @@ func TestSignedIdentityVectorsTwoImplementations(t *testing.T) {
 			seeds[k.Signer] = unhex(t, k.Secret)
 		}
 	}
-	if len(seeds) != 2 {
-		t.Fatalf("%d Ed25519 keys in the file, want 2", len(seeds))
+	if len(seeds) != 3 {
+		t.Fatalf("%d Ed25519 keys in the file, want 3", len(seeds))
 	}
 	type c struct {
 		name, signer, msg, sg string
@@ -61,8 +61,8 @@ func TestSignedIdentityVectorsTwoImplementations(t *testing.T) {
 		}
 		cases = append(cases, c{x.Name, x.Signer, x.VerifiedString, x.Sig, step})
 	}
-	if nPos != 12 || len(cases) != 12+16 {
-		t.Fatalf("%d positives / %d cases of Ed25519, want 12 / 28", nPos, len(cases))
+	if nPos != 16 || len(cases) != 16+16 {
+		t.Fatalf("%d positives / %d cases of Ed25519, want 16 / 32", nPos, len(cases))
 	}
 	accepted, stockOnly := 0, 0
 	for i, x := range cases {

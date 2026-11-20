@@ -1069,7 +1069,9 @@ Files in this candidate:
   `identity_cut`s (`last_good` set and `null`), and the root's raw **`rc/1` `revoke_key`** after them (§2.1: raw key
   events stay `rc/1`; a root revoke is therefore not an `rc/2` positive); the worker's two `authored` acts
   under `x_actor_v1`, the second carrying `amends`; and the worker's `rc/2` typed-controller `genesis` (§2.1: a bare key
-  proposing `{"identity": I}` as the one controller, marker `{}`, no actor, its id usable as a resource id); then, of an edition of that genesis, the worker's marker-only approval (§2.3: `rc/2`, marker `{}`, no actor) and the identity's `--as` approval of the same body under a grant for that resource, which name one edition id (§2.2). Each positive entry gives the payload type
+  proposing `{"identity": I}` as the one controller, marker `{}`, no actor, its id usable as a resource id); then, of an edition of that genesis, the worker's marker-only approval (§2.3: `rc/2`, marker `{}`, no actor) and the identity's `--as` approval of the same body under a grant for that resource, which name one edition id (§2.2); and the second-controller case (§8): a genesis
+  naming `{"identity": I}` and `{"key": K2}` under `k_of_n` 2, a grant to the worker for it, and one edition approved by the
+  worker acting for I and by K2 bare (marker-only, K2's first line), two signers whose approvals name one edition id. Each positive entry gives the payload type
   (`…<kind>.v2+json`), the JCS payload, the exact PAE signed string, its byte count, the statement id, the
   signature and the delivered line, plus the outcome the candidate reader must give (and the actor it must
   read). Negative entries are delivered lines derived from a positive by exactly the members named in
