@@ -68,6 +68,28 @@ effect until 1.0.0. See `docs/RELEASING.md` for the bump rules and release steps
   checkout of the hub; a store kept elsewhere is pulled into one first). GETTING-STARTED section 4 now says a script
   reads exit 3 as "could not check", the expected answer for an output nobody re-derived, and that it moves to 0 when an
   independent key re-derives it.
+- One key's two `authored` claims of the same output under the same provenance no longer read as a re-derivation. A key's
+  bare claim from `run --publish` plus its own `publish --as I --grant G` of the same bytes and provenance counted as two
+  runs, so the output read T0 and `verify` exited 0 though nothing was re-run. Within a derivation group a key now
+  contributes at most one `authored` run per output, whether bare or for any identity (the one carrying an environment
+  record, else the lowest statement id); only a `reproduced` adds a further run of the same key, which still reads
+  "re-derived by its author only". The output reads `not re-derived`, `verify` exits 3, and `explain` says the extra claim
+  is not counted as a run. `verify --rerun` with several claims pinning a blob now re-runs the first by id that carries an
+  environment record (and says so) rather than the first by id. Two different keys are unchanged. No signed byte changes.
+- `identity grant --permissions` now sorts and deduplicates each permission's exact target set (`contents`,
+  `statements`, `resources`, `tasks`) as its help says, not only the permission list. An unsorted or duplicated set was
+  refused as `not valid (the signed line reads back as invalid statement)` with no field named; it now signs the same
+  grant as the sorted, duplicate-free input. Input already sorted signs the same bytes as before.
+- `publish --draft` refuses a draft whose body carries `x_identity_v1` when the writer would sign it `rc/1` (an edition of
+  an `rc/1` resource, a key-only genesis, any other kind): exit 2, nothing signed. Before, it was signed `rc/1` with the
+  marker as a plain body member that no reader takes for an identity act (it forked a collection's editions, or left a
+  task naming no beneficiary). `next` names `--as`/`--grant`, or a genesis naming an identity as controller, whose
+  editions the writer marks itself. The `rc/2` marker-only forms the writer adds are unchanged.
+- `publish task --help` and GETTING-STARTED now say what this reader does not check in a task contract: it evaluates
+  no rubric and verifies no independence, so a counted contract with a rubric reads `unchecked` and one with
+  `independence: required` reads `unknown`, and neither reaches `ready` by counting (settle such work by review); a
+  deadline is checked only against a synced header chain (KNOWN-LIMITS L-01, L-02) and is `unchecked` without one; and
+  `counting_unit: identity` needs an `rc/2` task edition, which `publish task` does not write.
 
 ### Tests
 

@@ -194,7 +194,7 @@ func init() {
 	)
 	Register(&Command{Name: "publish task", Summary: "create a task (genesis + first edition) or publish a new edition of one",
 		Store: true, Writes: true, Flags: tflags, Prepare: preparePublishTask, Run: publishTaskCmd,
-		Help: "A new task: --name and --contract; your key is its one controller (any one approves). A new edition: --task and --contract. Prints how the edition will be settled: by counting (its quorum), or by review when the contract has no quorum predicate, or readiness unchecked when this reader cannot read the contract."})
+		Help: "A new task: --name and --contract; your key is its one controller (any one approves). A new edition: --task and --contract. Prints how the edition will be settled: by counting (its quorum), or by review when the contract has no quorum predicate, or readiness unchecked when this reader cannot read the contract. This reader evaluates no rubric and verifies no independence: a counted contract with a rubric reads readiness unchecked, and one with independence required reads unknown, so neither reaches ready by counting; settle such work by review (no quorum, the beneficiary's decide). A deadline is checked only against a header chain this reader has synced (anchor headers sync; KNOWN-LIMITS L-01, L-02), and is unchecked without one. counting_unit identity needs an rc/2 task edition (task_roles), which this command does not write: under this contract placement it reads unknown."})
 }
 
 // pubPrep is what Prepare read.
@@ -789,6 +789,9 @@ func publishCmd(c *Ctx) (*Obj, int, error) {
 			drafts[0] = d
 		}
 	}
+	if prob := markerOnRC1(drafts[0]); prob != nil {
+		return nil, 0, prob
+	}
 	// the holds beside the claim: only for bytes this unit installs or this store already keeps (an observed whose
 	// bytes this store does not keep has nothing to serve)
 	if haveBytes := digest != "" && (p.content != "" || c.Store.HasBlob(store.Digest(digest))); p.holds && haveBytes {
@@ -821,6 +824,25 @@ func publishCmd(c *Ctx) (*Obj, int, error) {
 	}
 	// the pre-pin state was resolved from the statements this store holds: the output carries the view's scope
 	return v.scopedResult(commitUnit(c, out, "publish", sts, blobs, p.content, h))
+}
+
+// markerOnRC1 refuses a draft the writer would sign rc/1 whose body carries the identity profile's body marker
+// x_identity_v1: rc/1 does not register the extension, so the marker would be signed as a plain body member that no
+// reader takes for an identity act (it forks a collection's editions, or names no beneficiary). The writer adds the
+// marker itself on every path that writes rc/2 (publish --as, an identity-controlled genesis and its editions);
+// a draft never carries it. Exit 2, nothing signed.
+func markerOnRC1(d wire.Draft) *Problem {
+	if d.RC != "" || d.Body == nil {
+		return nil
+	}
+	if _, ok := d.Body.Get(wire.IdentityCrit); !ok {
+		return nil
+	}
+	return usage("malformed-argument", "the draft body carries "+wire.IdentityCrit,
+		"this "+d.Kind+" is written rc/1, which carries no identity marker: it would be signed as a plain body member that no reader takes for an identity act; nothing was signed",
+		"option --draft",
+		"drop "+wire.IdentityCrit+" from the body: to act for an identity give --as <identity> --grant <grant>; for a resource an identity controls, publish a genesis naming it as a controller ({\"identity\": \"<id>\"}), whose editions the writer marks itself",
+		d.Kind)
 }
 
 // typedResource reports whether the resource an edition or withdraw_approval body names has an rc/2 genesis, read
