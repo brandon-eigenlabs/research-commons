@@ -37,6 +37,8 @@ var ivKeyDefs = []ivKeyDef{
 	{"ed25519-worker", AlgEd25519, "research-commons fixed-root identity signed vectors: worker key (ed25519)"},
 	{"eip191-secp256k1-root", AlgEIP191, "research-commons fixed-root identity signed vectors: root key (eip191-secp256k1)"},
 	{"eip191-secp256k1-worker", AlgEIP191, "research-commons fixed-root identity signed vectors: worker key (eip191-secp256k1)"},
+	{"ed25519-second", AlgEd25519, "research-commons fixed-root identity signed vectors: second controller key (ed25519)"},
+	{"eip191-secp256k1-second", AlgEIP191, "research-commons fixed-root identity signed vectors: second controller key (eip191-secp256k1)"},
 }
 
 func ivKey(d ivKeyDef) Key {
@@ -208,7 +210,7 @@ func ivDigest(b byte) string {
 
 // ivChain builds the positive lines of one algorithm. Root R signs the identity (I, G, two cuts, the raw revoke);
 // worker K signs its own genesis (D, an ordinary rc/1 bare-key line) and two opted-in rc/2 acts for I under G.
-func ivChain(chain string, root, work Key) []*ivPos {
+func ivChain(chain string, root, work, second Key) []*ivPos {
 	var out []*ivPos
 	add := func(name string, rc string, k Key, l ivLine, status, why string) *ivPos {
 		p := &ivPos{name: chain + "-" + name, chain: chain, alg: k.Alg(), rc: rc, kind: ivStr(l.env, "kind"), signer: k.Signer(),
@@ -256,6 +258,26 @@ func ivChain(chain string, root, work Key) []*ivPos {
 	ia := add("typed-edition-identity", "rc/2", work, ivSignEnv(setField(ivDraft("rc/2", "edition", 5, mo.id, true, edBody, work), ActorField,
 		ivObj("identity", inc.id, "grant", grant2.id)), work, 2), "valid", "")
 	ia.actorI, ia.actorG = inc.id, grant2.id
+	// The case a second controller subject exists for (identity note §8; #256, #257): a collection controlled by the
+	// identity I and an independent bare key K2 under k_of_n 2. The worker signs its genesis (a typed set of two
+	// subjects, sorted by JCS text), the root grants the worker edition on it, and one edition is approved twice: by
+	// the worker acting for I, and by K2 bare (marker-only, K2's first line). The two approvals share the body bytes,
+	// so they are two approvals of one edition, which is what lets k_of_n 2 be met. New seqs only: no entry moves.
+	two := canon.Array{ivObj("identity", inc.id), ivObj("key", second.Signer())}
+	if string(canon.Encode(two[0])) > string(canon.Encode(two[1])) {
+		two[0], two[1] = two[1], two[0]
+	}
+	gen2 := ivObj("type", "collection", "name", "vector two subjects", "controllers", two, "rule", ivObj("k_of_n", ivObj("k", 2)))
+	tg2 := add("two-subject-genesis", "rc/2", work, ivSignEnv(ivDraft("rc/2", "genesis", 6, ia.id, true, gen2, work), work, 2), "valid", "")
+	g3b := ivObj("identity", inc.id, "delegate", ivObj("key", work.Signer(), "inception", k0.id),
+		"permissions", canon.Array{ivObj("kind", "edition", "targets", ivObj("resources", canon.Array{canon.String(tg2.id)}))})
+	grant3 := add("grant-edition-two-subject", "rc/2", root, ivSignEnv(ivDraft("rc/2", "identity_grant", 6, grant2.id, true, g3b, root), root, 2), "valid", "")
+	ed2Body := ivObj("resource", tg2.id, "predecessors", canon.Array{canon.String(tg2.id)},
+		"contents", ivObj("members", canon.Array{}, "selection", "curated"))
+	ti := add("two-subject-edition-identity", "rc/2", work, ivSignEnv(setField(ivDraft("rc/2", "edition", 7, tg2.id, true, ed2Body, work), ActorField,
+		ivObj("identity", inc.id, "grant", grant3.id)), work, 2), "valid", "")
+	ti.actorI, ti.actorG = inc.id, grant3.id
+	add("two-subject-edition-key", "rc/2", second, ivSignEnv(ivDraft("rc/2", "edition", 0, "", true, ed2Body, second), second, 2), "valid", "")
 	if work.Alg() == AlgEIP191 {
 		for _, p := range out {
 			raw, _ := hex.DecodeString(p.sig[2:])
@@ -420,8 +442,8 @@ func ivBuild(t testing.TB) (string, []*ivPos, []*ivNeg) {
 	keys := ivKeys()
 	var pos []*ivPos
 	var neg []*ivNeg
-	for _, c := range [][3]string{{"ed", "ed25519-root", "ed25519-worker"}, {"eip", "eip191-secp256k1-root", "eip191-secp256k1-worker"}} {
-		p := ivChain(c[0], keys[c[1]], keys[c[2]])
+	for _, c := range [][4]string{{"ed", "ed25519-root", "ed25519-worker", "ed25519-second"}, {"eip", "eip191-secp256k1-root", "eip191-secp256k1-worker", "eip191-secp256k1-second"}} {
+		p := ivChain(c[0], keys[c[1]], keys[c[2]], keys[c[3]])
 		pos = append(pos, p...)
 		neg = append(neg, ivNegs(c[0], keys[c[1]], keys[c[2]], p, t)...)
 		if c[0] == "ed" {
@@ -579,8 +601,8 @@ func ivPAE(rc, kind, jcs string) (ptype, ss string) {
 // TestSignedIdentityVectorKeys: the published labels give the published secrets and signers, for both algorithms.
 func TestSignedIdentityVectorKeys(t *testing.T) {
 	v := ivLoad(t)
-	if len(v.Keys) != 4 {
-		t.Fatalf("%d keys, want 4 (root and worker, per algorithm)", len(v.Keys))
+	if len(v.Keys) != 6 {
+		t.Fatalf("%d keys, want 6 (root, worker and second controller, per algorithm)", len(v.Keys))
 	}
 	algs := map[string]int{}
 	for _, k := range v.Keys {
@@ -602,7 +624,7 @@ func TestSignedIdentityVectorKeys(t *testing.T) {
 		}
 		algs[k.Alg]++
 	}
-	if algs[AlgEd25519] != 2 || algs[AlgEIP191] != 2 {
+	if algs[AlgEd25519] != 3 || algs[AlgEIP191] != 3 {
 		t.Fatalf("keys per algorithm: %v", algs)
 	}
 }
@@ -761,7 +783,7 @@ func TestSignedIdentityPositiveVectors(t *testing.T) {
 			if x.Kind == "identity_cut" && (string(body.Members["identity"].(canon.String)) != inc.ID || string(body.Members["grant"].(canon.String)) != grant.ID) {
 				t.Errorf("%s: cut does not name the identity and the grant", x.Name)
 			}
-			if x.ActorIdentity != "" && (x.ActorIdentity != inc.ID || x.ActorGrant != grant.ID) && x.Name != chain+"-typed-edition-identity" {
+			if x.ActorIdentity != "" && (x.ActorIdentity != inc.ID || x.ActorGrant != grant.ID) && x.Name != chain+"-typed-edition-identity" && x.Name != chain+"-two-subject-edition-identity" {
 				t.Errorf("%s: actor does not name the inception and the grant", x.Name)
 			}
 		}
@@ -790,8 +812,8 @@ func TestSignedIdentityTypedGenesisIsAResource(t *testing.T) {
 			t.Errorf("%s: a 63-hex resource id reads %s (%s), want Invalid naming the resource", x.Name, st.Status, st.Why)
 		}
 	}
-	if n != 2 {
-		t.Fatalf("%d typed genesis vectors, want one per algorithm", n)
+	if n != 4 {
+		t.Fatalf("%d typed genesis vectors, want two per algorithm (one subject, two subjects)", n)
 	}
 }
 
@@ -978,5 +1000,56 @@ func TestSignedIdentityEditionIDs(t *testing.T) {
 	}
 	if seen["rc/2"] == "" || seen["rc/1"] == "" || seen["rc/2"] == seen["rc/1"] {
 		t.Fatalf("rc/2 and rc/1 edition ids of one body: %v", seen)
+	}
+}
+
+// TestSignedIdentityTwoSubjectApprovals: the second-controller case (identity note §8; #256, #257). The two-subject
+// genesis names {identity: I} and {key: K2}, sorted by JCS text, under k_of_n 2; one edition is approved by the worker
+// acting for I (under a grant covering exactly that resource) and by K2 bare (marker-only, no actor, K2's first line).
+// The two approvals are by different signers, sign the same body bytes and so name one edition id: k_of_n 2 can be met.
+func TestSignedIdentityTwoSubjectApprovals(t *testing.T) {
+	v := ivLoad(t)
+	by := map[string]*conformance.IdentityPositive{}
+	for i := range v.Positive {
+		by[v.Positive[i].Name] = &v.Positive[i]
+	}
+	keys := ivKeys()
+	for chain, second := range map[string]string{"ed": "ed25519-second", "eip": "eip191-secp256k1-second"} {
+		g, gr, ti, tk, inc := by[chain+"-two-subject-genesis"], by[chain+"-grant-edition-two-subject"], by[chain+"-two-subject-edition-identity"],
+			by[chain+"-two-subject-edition-key"], by[chain+"-inception"]
+		if g == nil || gr == nil || ti == nil || tk == nil || inc == nil {
+			t.Fatalf("%s: missing entries", chain)
+		}
+		k2 := keys[second].Signer()
+		gb := ivParseLine(t, g.Line).Members["body"].(*canon.Object)
+		ctrl := gb.Members["controllers"].(canon.Array)
+		if len(ctrl) != 2 || string(canon.Encode(ctrl[0])) >= string(canon.Encode(ctrl[1])) {
+			t.Fatalf("%s: controllers are not two subjects sorted by JCS text", chain)
+		}
+		want := map[string]bool{string(canon.Encode(ivObj("identity", inc.ID))): true, string(canon.Encode(ivObj("key", k2))): true}
+		for _, c := range ctrl {
+			if !want[string(canon.Encode(c))] {
+				t.Errorf("%s: controller %s is not I or K2", chain, canon.Encode(c))
+			}
+		}
+		if string(canon.Encode(gb.Members["rule"])) != `{"k_of_n":{"k":2}}` {
+			t.Errorf("%s: rule is not k_of_n 2", chain)
+		}
+		if ti.ActorIdentity != inc.ID || ti.ActorGrant != gr.ID || tk.ActorIdentity != "" || tk.Signer != k2 || ti.Signer == tk.Signer {
+			t.Errorf("%s: approvals are not the worker for I and K2 bare", chain)
+		}
+		bi := ivParseLine(t, ti.Line).Members["body"].(*canon.Object)
+		bk := ivParseLine(t, tk.Line).Members["body"].(*canon.Object)
+		if !bytes.Equal(canon.Encode(bi), canon.Encode(bk)) || ivStr(bk, "resource") != g.ID {
+			t.Fatalf("%s: the two approvals do not sign one edition body of the two-subject genesis", chain)
+		}
+		if ID(PAE(EditionBodyType(2), canon.Encode(bi))) != ID(PAE(EditionBodyType(2), canon.Encode(bk))) {
+			t.Errorf("%s: the two approvals name different editions", chain)
+		}
+		pb := ivParseLine(t, gr.Line).Members["body"].(*canon.Object)
+		tgt := pb.Members["permissions"].(canon.Array)[0].(*canon.Object).Members["targets"].(*canon.Object).Members["resources"].(canon.Array)
+		if len(tgt) != 1 || string(tgt[0].(canon.String)) != g.ID {
+			t.Errorf("%s: the grant does not cover exactly the two-subject genesis", chain)
+		}
 	}
 }
