@@ -46,6 +46,7 @@ func init() {
 			}},
 		Flag{Name: "successor-key", Value: "file", Help: "the successor's key file: its signer is named (the key is never printed); exactly one of --successor and --successor-key"},
 	)
+	flags = append(flags, ledgerKeyEventFlags...)
 	Register(&Command{Name: "rotate", Summary: "rotate your signing key: sign a rotate_key naming its successor",
 		Store: true, Writes: true, Flags: flags, Prepare: prepareRotate, Run: rotateCmd,
 		Help: "A rotation retires your key and names its successor; the successor starts its own log and inherits no claims. " +
@@ -54,7 +55,8 @@ func init() {
 			"With a forked log and no --prev, the rotation extends the highest tip when no branch carries a key event, and otherwise asks for --prev. " +
 			"It is refused (exit 1) when the history it extends already holds an in-force key event (the rotation would count toward nothing) and when the successor's log here carries a key event. " +
 			"Every tip is listed with what happens to it. --dry-run signs nothing and writes nothing. " +
-			"Exit 0 signed and committed (or the dry run); 1 refused after the check over the logs completed (nothing signed); 2 did not start (no successor or both options, the successor is your own key, no usable key); 3 could not decide (a forked log without --prev, a line it names not held) or a failure after work started.",
+			"With --ledger --ledger-path <path> the key being rotated is a Ledger device's key at that path (eip191-secp256k1): the device signs the rotation after you review it there (#266); a dry run reads the device's address and asks it to sign nothing. When the store holds no line of the signing key the output warns (a wrong path or passphrase gives another key); --expect-signer <key> refuses one. " +
+			"Exit 0 signed and committed (or the dry run); 1 refused after the check over the logs completed, or the rotation was refused on the device (nothing signed); 2 did not start (no successor or both options, the successor is your own key, no usable key); 3 could not decide (a forked log without --prev, a line it names not held), the device could not sign (locked, closed app, timeout, interrupted), or a failure after work started." + ledgerHelp,
 	})
 }
 
@@ -87,10 +89,8 @@ func prepareRotate(c *Ctx) *Problem {
 	if prob := prepareCommon(c, &p.pubPrep); prob != nil {
 		return prob
 	}
-	if p.successor == p.key.Key.Signer() {
-		return usage("conflicting-options", "the successor is the signing key itself",
-			"a key cannot succeed itself; nothing was done", "option --successor",
-			"name another key as the successor (commons key new --out <file>, then --successor-key <file>)", p.successor)
+	if p.ledger == nil && p.successor == p.key.Key.Signer() {
+		return selfSuccessor(p.successor) // with --ledger, checked once the device's key is known
 	}
 	c.Prep = p
 	return nil
@@ -98,7 +98,17 @@ func prepareRotate(c *Ctx) *Problem {
 
 func rotateCmd(c *Ctx) (*Obj, int, error) {
 	p := c.Prep.(*rotatePrep)
-	k := p.key.Key
+	k, done, prob := keyEventKey(c, &p.pubPrep)
+	if prob != nil {
+		return nil, 0, prob
+	}
+	defer done()
+	if prob := expectSigner(c, k); prob != nil {
+		return nil, 0, prob
+	}
+	if p.successor == k.Signer() {
+		return nil, 0, selfSuccessor(p.successor)
+	}
 	wl := lockFor(c, k.Signer())
 	defer wl.Unlock()
 	v, err := loadView(c.Store, nil)
@@ -113,6 +123,7 @@ func rotateCmd(c *Ctx) (*Obj, int, error) {
 			Next:   "name a key with no rotate_key or revoke_key (commons key new --out <file>)", Peer: p.successor, Exit: exitWriterRefused}
 	}
 	lv := v.logs.Log(k.Signer()).View()
+	heldLines := len(lv.Lines)
 	chained := map[string]*wire.Statement{}
 	for _, ln := range lv.Lines {
 		if ln.State == keylog.Chained {
@@ -144,25 +155,25 @@ func rotateCmd(c *Ctx) (*Obj, int, error) {
 	noteLock(out, wl)
 	afterHead()
 	out.set("tips", rotateTips(lv, plan))
+	unheldKeyWarning(out, k, heldLines)
 	// a rotation closes no grant naming the key (identity profile §4.1), and a successor inherits none
 	setGrantsNotClosed(out, v, k.Signer())
 	body := &canon.Object{Members: map[string]canon.Value{}}
 	setMember(body, "successor", canon.String(p.successor))
-	st, err := wire.Write(wire.Draft{Kind: "rotate_key", Seq: plan.h.seq, Prev: plan.h.prev, Merges: plan.merges, TS: p.ts, Body: body}, k, Now())
-	if err == nil && st.Status != wire.Valid {
-		err = &refusal.Refusal{Class: refusal.Intrinsic, Reason: "not valid", Detail: "the signed line reads back as " + string(st.Status)}
-	}
+	sg, dev, err := signKeyEvent(c, wire.Draft{Kind: "rotate_key", Seq: plan.h.seq, Prev: plan.h.prev, Merges: plan.merges, TS: p.ts, Body: body}, k)
 	if err != nil {
+		if pr, ok := err.(*Problem); ok {
+			return nil, 0, pr
+		}
 		return nil, 0, writeRefused(err)
 	}
-	sts := []signed{{st, st.Line()}}
+	sts := []signed{sg}
 	if len(plan.merges) > 0 {
 		out.set("merges", refs(plan.merges...))
 	}
-	if cut := revokeCut(c, k.Signer(), sts); len(cut) > 0 {
-		out.set("stop_counting", cut)
-	}
+	setKeyEventCut(c, out, k, sts, dev)
 	o, code, err := commitUnit(c, out, "rotate", sts, nil, "", head{})
+	deviceDryNote(c, k, o)
 	if err == nil && o != nil {
 		o.set("successor_log", textV(successorLog(v.logs.Log(p.successor).View())))
 	}

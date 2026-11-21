@@ -174,7 +174,7 @@ var limits = []limit{
 	},
 	{
 		id:  "L-07",
-		gap: "The only hardware connector is a Ledger device running the Ethereum app (`eip191-secp256k1`, through `key sign --ledger`); no other device or wallet is driven. A YubiKey 5 (its OpenPGP applet) already signs by hand through the external-signing package (#250)",
+		gap: "The only hardware connector is a Ledger device running the Ethereum app (`eip191-secp256k1`, through `key sign --ledger`, `revoke --ledger` and `rotate --ledger`); no other device or wallet is driven. A YubiKey 5 (its OpenPGP applet) already signs by hand through the external-signing package (#250)",
 		sources: []limitSource{
 			{file: "docs/DESIGN-notes-fixed-root-identity.md", says: "no other hardware or wallet connector is built."},
 			{file: "docs/DESIGN-notes-fixed-root-identity.md", says: "A key file signer is not a hardware or wallet connector."},
@@ -449,7 +449,7 @@ var limits = []limit{
 	},
 	{
 		id:  "L-20",
-		gap: "The Ledger connector's USB transport is built for Linux only (hidraw); on macOS and Windows `key sign --ledger` reaches only an emulator",
+		gap: "The Ledger connector's USB transport is built for Linux only (hidraw); on macOS and Windows `--ledger` (`key sign`, `key show`, `revoke`, `rotate`) reaches only an emulator",
 		sources: []limitSource{
 			{file: "docs/DESIGN-notes-fixed-root-identity.md", says: "USB on macOS and Windows is not built."},
 			{help: []string{"key", "sign"}, says: "on other systems the USB connector is not built"},
@@ -494,18 +494,18 @@ var limits = []limit{
 	},
 	{
 		id:  "L-22",
-		gap: "A key held on a device cannot sign a key event or a bare-key statement: `revoke` and `rotate` sign with a key file only, and the external-signing package (the only input of `key sign --ledger`) carries identity statements and acts for an identity only. So a Ledger-held root cannot sign its own `revoke_key` or `rotate_key`, and a device-held controller key cannot approve an edition. Hold a controller key as an `rc-key/0` file; a device-held root can be revoked only by rebuilding its key outside the tool (L-03) and running `revoke --key`",
+		gap: "A bare-key statement cannot be signed by a device, and a key event can be signed by a device only on a Ledger attached to the store's machine (`revoke --ledger`, `rotate --ledger`): the external-signing package carries identity statements and acts for an identity only. So a device-held controller key cannot approve an edition, and a key held on another device (a YubiKey) or on an air-gapped machine cannot sign its own `revoke_key` or `rotate_key`. Hold a controller key as an `rc-key/0` file; such a root can be revoked only by rebuilding its key outside the tool (L-03), which puts the root key on a general-purpose machine, and running `revoke --key`",
 		sources: []limitSource{
-			{file: "docs/DESIGN-notes-fixed-root-identity.md", says: "So a key held on a device cannot sign its own `revoke_key` or `rotate_key`"},
+			{file: "docs/DESIGN-notes-fixed-root-identity.md", says: "What still reaches no device is a bare-key statement"},
 			{file: "CHANGELOG.md", says: "KNOWN-LIMITS L-22"},
 		},
-		probe:  "`revoke --ledger` and `rotate --ledger` exit 2 (`unknown-option`), and `publish --draft` of a `revoke_key` with `--prepare --signer` exits 2 (`publish --prepare needs --as`), each writing nothing",
-		closes: "`revoke --ledger` / `rotate --ledger` (the device signs the key event), and a package route for bare-key statements (#266)",
+		probe:  "`revoke --prepare` and `rotate --prepare` exit 2 (`unknown-option`), and `publish --draft` of a `revoke_key` with `--prepare --signer` exits 2 (`publish --prepare needs --as`), each writing nothing",
+		closes: "a package route for bare-key statements and key events (#266, route (b)); a connector for another device (L-07)",
 		open: func(t *testing.T) (bool, string) {
 			h := newIDHome(t, wire.AlgEIP191)
 			before := storeBytes(t, h.store)
-			rv := runIn(h.store, nil, "revoke", "--ledger", "--ledger-path", "m/44'/60'/0'/0/0", "--reason", "key_compromise", "--last-good", "none", "--json")
-			ro := runIn(h.store, nil, "rotate", "--ledger", "--json")
+			rv := runIn(h.store, nil, "revoke", "--prepare", filepath.Join(t.TempDir(), "r.pkg"), "--signer", h.signer, "--reason", "key_compromise", "--last-good", "none", "--json")
+			ro := runIn(h.store, nil, "rotate", "--prepare", filepath.Join(t.TempDir(), "o.pkg"), "--signer", h.signer, "--successor", h.signer, "--json")
 			pkg := filepath.Join(t.TempDir(), "p.pkg")
 			pb := runIn(h.store, nil, "publish", "--draft", h.file("rk.json", `{"kind":"revoke_key","body":{"reason":"key_compromise"}}`), "--prepare", pkg, "--signer", h.signer, "--json")
 			_, statErr := os.Stat(pkg)
