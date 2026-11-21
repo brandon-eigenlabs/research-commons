@@ -492,6 +492,30 @@ var limits = []limit{
 			return r.code == ExitDidNotStart && strings.Contains(r.stdout, "controllers[0] is not a key") && storeBytes(t, h.store) == before, r.stdout
 		},
 	},
+	{
+		id:  "L-22",
+		gap: "A key held on a device cannot sign a key event or a bare-key statement: `revoke` and `rotate` sign with a key file only, and the external-signing package (the only input of `key sign --ledger`) carries identity statements and acts for an identity only. So a Ledger-held root cannot sign its own `revoke_key` or `rotate_key`, and a device-held controller key cannot approve an edition. Hold a controller key as an `rc-key/0` file; a device-held root can be revoked only by rebuilding its key outside the tool (L-03) and running `revoke --key`",
+		sources: []limitSource{
+			{file: "docs/DESIGN-notes-fixed-root-identity.md", says: "So a key held on a device cannot sign its own `revoke_key` or `rotate_key`"},
+			{file: "CHANGELOG.md", says: "KNOWN-LIMITS L-22"},
+		},
+		probe:  "`revoke --ledger` and `rotate --ledger` exit 2 (`unknown-option`), and `publish --draft` of a `revoke_key` with `--prepare --signer` exits 2 (`publish --prepare needs --as`), each writing nothing",
+		closes: "`revoke --ledger` / `rotate --ledger` (the device signs the key event), and a package route for bare-key statements (#266)",
+		open: func(t *testing.T) (bool, string) {
+			h := newIDHome(t, wire.AlgEIP191)
+			before := storeBytes(t, h.store)
+			rv := runIn(h.store, nil, "revoke", "--ledger", "--ledger-path", "m/44'/60'/0'/0/0", "--reason", "key_compromise", "--last-good", "none", "--json")
+			ro := runIn(h.store, nil, "rotate", "--ledger", "--json")
+			pkg := filepath.Join(t.TempDir(), "p.pkg")
+			pb := runIn(h.store, nil, "publish", "--draft", h.file("rk.json", `{"kind":"revoke_key","body":{"reason":"key_compromise"}}`), "--prepare", pkg, "--signer", h.signer, "--json")
+			_, statErr := os.Stat(pkg)
+			ok := rv.code == ExitDidNotStart && strings.Contains(rv.stdout, "unknown-option") &&
+				ro.code == ExitDidNotStart && strings.Contains(ro.stdout, "unknown-option") &&
+				pb.code == ExitDidNotStart && strings.Contains(pb.stdout, "external signing is built for identity statements") &&
+				os.IsNotExist(statErr) && storeBytes(t, h.store) == before
+			return ok, rv.stdout + ro.stdout + pb.stdout
+		},
+	},
 }
 
 // TestDocumentedLimits: C-core-07.

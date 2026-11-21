@@ -148,6 +148,10 @@ effect until 1.0.0. See `docs/RELEASING.md` for the bump rules and release steps
   the claims model, with a table mapping the alpha template's fields. Docs only.
 - Documentation: installing from source is `go install ./cmd/commons` from a clone (no branch switch, since `next` is the
   default branch); `go build` stays as the in-place alternative. No byte, identifier or behaviour change.
+- Documentation: KNOWN-LIMITS L-22 records #266: a key held on a device cannot sign a key event or a bare-key statement
+  (`revoke` and `rotate` take a key file only; the external-signing package carries identity statements and acts only),
+  so a Ledger-held root cannot be revoked from the tool and a device-held controller key cannot approve an edition. The
+  identity note's Ledger paragraph says so. No byte, identifier or behaviour change.
 - Documentation: KNOWN-LIMITS L-21 is narrowed to what it is since #257: only a collection created key-controlled
   (genesis `rc/1`) cannot be moved to identity control. An identity-controlled collection's editions may name identity
   controllers (a collaborator's identity, or a successor identity after a root compromise), as `publish --help`,
