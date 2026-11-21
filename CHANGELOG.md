@@ -105,8 +105,8 @@ effect until 1.0.0. See `docs/RELEASING.md` for the bump rules and release steps
   id. The existing vectors are byte-identical.
 - The signed identity vectors gain the second-controller case, per algorithm: a genesis naming `{identity: I}` and
   `{key: K2}` (sorted) under `k_of_n` 2, the grant covering it, and one edition approved by the worker acting for I and by
-  a separate key K2 bare (marker-only). The two approvals are by different signers and name one edition id, which is what
-  lets the rule be met (#257); a sorted two-subject set is now in the signed file too. Two test-only keys (one per
+  a separate key K2 bare (marker-only). The two approvals are by different signers and name one edition id, the representation
+  that lets a `k_of_n` 2 rule be met (#257; the file's root chain includes its revoke, so it is not an authority fixture); a sorted two-subject set is now in the signed file too. Two test-only keys (one per
   algorithm) are added; every existing entry is byte-identical.
 - Property cases P-01, P-02, P-03 and P-12 are covered over the exchange view and the gates (a seeded task-world
   generator; duplicate and re-encoded delivery, every delivery order, outsider statements, withheld statements); P-08's
