@@ -55,7 +55,7 @@ func init() {
 			"With a forked log and no --prev, the rotation extends the highest tip when no branch carries a key event, and otherwise asks for --prev. " +
 			"It is refused (exit 1) when the history it extends already holds an in-force key event (the rotation would count toward nothing) and when the successor's log here carries a key event. " +
 			"Every tip is listed with what happens to it. --dry-run signs nothing and writes nothing. " +
-			"With --ledger --ledger-path <path> the key being rotated is a Ledger device's key at that path (eip191-secp256k1): the device signs the rotation after you review it there (#266); a dry run lists the plan and asks the device nothing. " +
+			"With --ledger --ledger-path <path> the key being rotated is a Ledger device's key at that path (eip191-secp256k1): the device signs the rotation after you review it there (#266); a dry run reads the device's address and asks it to sign nothing. When the store holds no line of the signing key the output warns (a wrong path or passphrase gives another key); --expect-signer <key> refuses one. " +
 			"Exit 0 signed and committed (or the dry run); 1 refused after the check over the logs completed, or the rotation was refused on the device (nothing signed); 2 did not start (no successor or both options, the successor is your own key, no usable key); 3 could not decide (a forked log without --prev, a line it names not held), the device could not sign (locked, closed app, timeout, interrupted), or a failure after work started." + ledgerHelp,
 	})
 }
@@ -103,6 +103,9 @@ func rotateCmd(c *Ctx) (*Obj, int, error) {
 		return nil, 0, prob
 	}
 	defer done()
+	if prob := expectSigner(c, k); prob != nil {
+		return nil, 0, prob
+	}
 	if p.successor == k.Signer() {
 		return nil, 0, selfSuccessor(p.successor)
 	}
@@ -120,6 +123,7 @@ func rotateCmd(c *Ctx) (*Obj, int, error) {
 			Next:   "name a key with no rotate_key or revoke_key (commons key new --out <file>)", Peer: p.successor, Exit: exitWriterRefused}
 	}
 	lv := v.logs.Log(k.Signer()).View()
+	heldLines := len(lv.Lines)
 	chained := map[string]*wire.Statement{}
 	for _, ln := range lv.Lines {
 		if ln.State == keylog.Chained {
@@ -151,6 +155,7 @@ func rotateCmd(c *Ctx) (*Obj, int, error) {
 	noteLock(out, wl)
 	afterHead()
 	out.set("tips", rotateTips(lv, plan))
+	unheldKeyWarning(out, k, heldLines)
 	// a rotation closes no grant naming the key (identity profile §4.1), and a successor inherits none
 	setGrantsNotClosed(out, v, k.Signer())
 	body := &canon.Object{Members: map[string]canon.Value{}}

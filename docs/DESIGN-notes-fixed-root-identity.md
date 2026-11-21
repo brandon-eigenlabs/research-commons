@@ -836,8 +836,10 @@ machine. The one exception is a key event: `revoke --ledger` and `rotate --ledge
 key's own `revoke_key` or `rotate_key` on the device, the same `personal_sign` over the PAE,
 after the holder reviews it there (#266). A key event has no package route, so for these two
 commands the store and the device are on one machine; this is how a device-held root revokes
-itself, or signs an escrowed revocation right after its inception. A dry run asks the device
-nothing. The line is byte for byte the one the key's file would sign. What still reaches no
+itself, or signs an escrowed revocation right after its inception. A dry run reads the device's
+address and asks it to sign nothing. A wrong path or passphrase gives another key, whose key event
+would retire that key instead: the output names the signing key, warns when the store holds no
+line of it, and `--expect-signer <key>` refuses any other. The line is byte for byte the one the key's file would sign. What still reaches no
 device is a bare-key statement (a controller key's edition approval, say), and a key event for a
 key held anywhere else (another device, an air-gapped machine): a package carries identity
 statements and acts for an identity only (KNOWN-LIMITS L-22, #266). Transport: USB HID on Linux (hidraw, Ledger framing); the Speculos emulator's APDU

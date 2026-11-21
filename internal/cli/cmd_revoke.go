@@ -97,7 +97,7 @@ func init() {
 			"With a forked log and no --prev, a soft revocation extends the highest tip when no branch carries a key event, and otherwise asks for --prev. " +
 			"key_compromise merges nothing unless you name it with --merge and needs --last-good <id> or --last-good none; on a forked log it needs --prev. " +
 			"Every tip is listed with what happens to it, and the lines that stop counting are named. Every identity grant naming the key is printed by id with its state (grants_not_closed): a key's own revocation closes none of them; only the identity's root does (identity cut). --dry-run signs nothing and writes nothing (with key_compromise it runs without --last-good, to list the tips). " +
-			"With --ledger --ledger-path <path> the key is a Ledger device's key at that path (eip191-secp256k1): the device signs the revocation after you review it there, so a device-held root can revoke itself (#266); a dry run lists the plan and asks the device nothing. " +
+			"With --ledger --ledger-path <path> the key is a Ledger device's key at that path (eip191-secp256k1): the device signs the revocation after you review it there, so a device-held root can revoke itself (#266); a dry run reads the device's address and asks it to sign nothing. When the store holds no line of the signing key the output warns (a wrong path or passphrase gives another key); --expect-signer <key> refuses one. " +
 			"Exit 0 signed and committed (or the dry run); 1 refused after the check over your log completed, or the revocation was refused on the device (nothing signed); 2 did not start (no reason and no terminal, a missing --last-good, conflicting options, no usable key); 3 could not decide (a forked log without --prev, a line it names not held), the device could not sign (locked, closed app, timeout, interrupted), or a failure after work started." + ledgerHelp,
 	})
 }
@@ -202,6 +202,9 @@ func revokeCmd(c *Ctx) (*Obj, int, error) {
 		return nil, 0, prob
 	}
 	defer done()
+	if prob := expectSigner(c, k); prob != nil {
+		return nil, 0, prob
+	}
 	wl := lockFor(c, k.Signer())
 	defer wl.Unlock()
 	v, err := loadView(c.Store, nil)
@@ -209,6 +212,7 @@ func revokeCmd(c *Ctx) (*Obj, int, error) {
 		return nil, 0, failed(err, "store", false, "run status, then fsck")
 	}
 	lv := v.logs.Log(k.Signer()).View()
+	heldLines := len(lv.Lines)
 	hard := revokeHard(p.reason)
 	chained := map[string]*wire.Statement{}
 	for _, ln := range lv.Lines {
@@ -229,6 +233,7 @@ func revokeCmd(c *Ctx) (*Obj, int, error) {
 		out.set("reason_kind", textV("soft: the key retired; its history keeps counting"))
 	}
 	out.set("tips", revokeTips(lv, plan))
+	unheldKeyWarning(out, k, heldLines)
 	// a key's own revocation closes no grant naming it (identity profile §4.1): each is printed by id, dry run or not
 	setGrantsNotClosed(out, v, k.Signer())
 	if hard && p.lastGood == "" {

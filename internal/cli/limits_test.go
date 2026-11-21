@@ -174,7 +174,7 @@ var limits = []limit{
 	},
 	{
 		id:  "L-07",
-		gap: "The only hardware connector is a Ledger device running the Ethereum app (`eip191-secp256k1`, through `key sign --ledger`); no other device or wallet is driven. A YubiKey 5 (its OpenPGP applet) already signs by hand through the external-signing package (#250)",
+		gap: "The only hardware connector is a Ledger device running the Ethereum app (`eip191-secp256k1`, through `key sign --ledger`, `revoke --ledger` and `rotate --ledger`); no other device or wallet is driven. A YubiKey 5 (its OpenPGP applet) already signs by hand through the external-signing package (#250)",
 		sources: []limitSource{
 			{file: "docs/DESIGN-notes-fixed-root-identity.md", says: "no other hardware or wallet connector is built."},
 			{file: "docs/DESIGN-notes-fixed-root-identity.md", says: "A key file signer is not a hardware or wallet connector."},
@@ -449,7 +449,7 @@ var limits = []limit{
 	},
 	{
 		id:  "L-20",
-		gap: "The Ledger connector's USB transport is built for Linux only (hidraw); on macOS and Windows `key sign --ledger` reaches only an emulator",
+		gap: "The Ledger connector's USB transport is built for Linux only (hidraw); on macOS and Windows `--ledger` (`key sign`, `key show`, `revoke`, `rotate`) reaches only an emulator",
 		sources: []limitSource{
 			{file: "docs/DESIGN-notes-fixed-root-identity.md", says: "USB on macOS and Windows is not built."},
 			{help: []string{"key", "sign"}, says: "on other systems the USB connector is not built"},

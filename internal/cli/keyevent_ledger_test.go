@@ -52,7 +52,7 @@ func TestRevokeLedger(t *testing.T) {
 	r := runLedger(h.store, dev.Opener(nil), nil, append(args, "--dry-run")...)
 	o := jsonOf(t, r)
 	if r.code != ExitOK || o.Members["dry_run"] != canon.Bool(true) || o.Members["committed"] != canon.Bool(false) || o.Members["device_shows"] == nil ||
-		!strings.Contains(r.stdout, "nothing was sent to the device") ||
+		!strings.Contains(r.stdout, "asked it to sign nothing") ||
 		signRequests(dev) != 0 || storeBytes(t, h.store) != before {
 		t.Fatalf("dry run: %d %s (sign requests %d)", r.code, r.stdout, signRequests(dev))
 	}
@@ -145,5 +145,53 @@ func TestKeyEventLedgerOptions(t *testing.T) {
 	}
 	if signRequests(dev) != 0 {
 		t.Fatal("a refused invocation asked the device to sign")
+	}
+}
+
+// TestKeyEventLedgerWrongKey (review on #268): a device that returns a valid signature by another key is the device's
+// fault, exit 3, nothing appended (as key sign --ledger); a device whose path or passphrase gives another key than the
+// store's is warned about, and --expect-signer refuses it before the device is asked to sign.
+func TestKeyEventLedgerWrongKey(t *testing.T) {
+	args := []string{"revoke", "--ledger", "--ledger-path", ledgerTestPath, "--reason", "key_compromise", "--last-good", "none", "--json"}
+	for name, set := range map[string]func(*ledgertest.App){
+		"signs other bytes": func(f *ledgertest.App) { f.Form = ledgertest.Corrupt },
+		"another seed":      func(f *ledgertest.App) { f.AddressSeed = "other" },
+	} {
+		dev := ledgertest.New("wrong-" + name)
+		h := newLedgerHome(t, dev)
+		if r := runIn(h.store, nil, "identity", "new", "--key", h.keyF, "--json"); r.code != ExitOK {
+			t.Fatal(r.stdout)
+		}
+		set(dev)
+		before := storeBytes(t, h.store)
+		r := runLedger(h.store, dev.Opener(nil), nil, args...)
+		if r.code != ExitCouldNot || !strings.Contains(r.stdout, "ledger-bad-signature") || storeBytes(t, h.store) != before {
+			t.Errorf("%s: %d %s", name, r.code, r.stdout)
+		}
+	}
+	// the device's key at the path is not the store's root (another passphrase): a warning on the dry run, and
+	// --expect-signer naming the root refuses before any sign request
+	dev := ledgertest.New("passphrase")
+	h := newLedgerHome(t, dev)
+	if r := runIn(h.store, nil, "identity", "new", "--key", h.keyF, "--json"); r.code != ExitOK {
+		t.Fatal(r.stdout)
+	}
+	root := h.signer
+	dev.Seed, dev.AddressSeed = "another passphrase", "another passphrase"
+	before := storeBytes(t, h.store)
+	r := runLedger(h.store, dev.Opener(nil), nil, append(args, "--dry-run")...)
+	o := jsonOf(t, r)
+	if r.code != ExitOK || o.Members["warning_key_not_held"] == nil || o.Members["signer"] == canon.String(root) || signRequests(dev) != 0 {
+		t.Fatalf("unheld key: %d %s", r.code, r.stdout)
+	}
+	r = runLedger(h.store, dev.Opener(nil), nil, append(args, "--expect-signer", root)...)
+	if r.code != ExitDidNotStart || !strings.Contains(r.stdout, "unexpected-signer") || signRequests(dev) != 0 || storeBytes(t, h.store) != before {
+		t.Fatalf("expect-signer: %d %s", r.code, r.stdout)
+	}
+	// the right key passes the guard and gets no warning
+	dev.Seed, dev.AddressSeed = "passphrase", ""
+	r = runLedger(h.store, dev.Opener(nil), nil, append(args, "--dry-run", "--expect-signer", root)...)
+	if r.code != ExitOK || jsonOf(t, r).Members["warning_key_not_held"] != nil {
+		t.Fatalf("right key: %d %s", r.code, r.stdout)
 	}
 }

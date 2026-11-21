@@ -14,7 +14,9 @@ effect until 1.0.0. See `docs/RELEASING.md` for the bump rules and release steps
 - `revoke --ledger --ledger-path <path>` and `rotate --ledger --ledger-path <path>`: a Ledger device signs the key's own
   `revoke_key` or `rotate_key` (EIP-191 `personal_sign` over the PAE, reviewed on the device), so a device-held identity
   root can revoke itself, and can sign an escrowed revocation right after inception (#266). The line is byte for byte
-  the one the key file signs. A dry run lists the plan and what the device would show, and asks the device nothing.
+  the one the key file signs. A dry run reads the device's address, lists the plan and what the device would show, and asks it to sign nothing.
+  The output names the signing key and warns when the store holds no line of it (a wrong path or passphrase gives
+  another key); `--expect-signer <key>` refuses a key event by any other key.
   A refusal on the device is exit 1, a device failure exit 3, each appending nothing. KNOWN-LIMITS L-22 narrows to what
   stays open: bare-key statements on any device, and key events for keys held elsewhere than a Ledger on the store's
   machine (the package route, #266). No change to the wire format, the signing package or any existing byte.

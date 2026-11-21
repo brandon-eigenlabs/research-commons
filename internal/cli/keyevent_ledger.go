@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/hex"
+	"errors"
 	"io"
 
 	"github.com/research-common/research-commons/internal/canon"
@@ -18,8 +19,40 @@ import (
 // committed through the same path. The store and the device are on one machine for these two commands; a key event
 // has no package route.
 
-// ledgerKeyEventFlags are the device options revoke and rotate take (the confirm option is key show's).
-var ledgerKeyEventFlags = []Flag{ledgerFlag, ledgerPathFlag, ledgerDeviceFlag, ledgerTimeoutFlag}
+// ledgerKeyEventFlags are the device options revoke and rotate take (the confirm option is key show's), and
+// --expect-signer, which guards the key a key event retires whatever signs it.
+var ledgerKeyEventFlags = []Flag{ledgerFlag, ledgerPathFlag, ledgerDeviceFlag, ledgerTimeoutFlag,
+	{Name: "expect-signer", Value: "key", Help: "refuse unless the signing key is this one (ed25519:<64 hex> or 0x<40 hex>): with --ledger, a wrong path or passphrase gives another key, and its key event would retire that key instead",
+		Check: func(v string) error {
+			if !reSuccessor.MatchString(v) {
+				return errors.New("not a key (ed25519: + 64 lowercase hex, or 0x + 40 lowercase hex)")
+			}
+			return nil
+		}},
+}
+
+// expectSigner refuses a key event signed by another key than --expect-signer names (exit 2, nothing asked or
+// signed): the guard against a wrong device path or passphrase retiring an unrelated key.
+func expectSigner(c *Ctx, k wire.Key) *Problem {
+	want, ok := c.Flag("expect-signer")
+	if !ok || want == k.Signer() {
+		return nil
+	}
+	return &Problem{Slug: "unexpected-signer", Title: "the signing key is not the one --expect-signer names", Class: refusal.Intrinsic, Scope: "option --expect-signer",
+		Detail: "the key event would be signed by " + k.Signer() + ", not " + want + "; nothing was signed or appended",
+		Next:   "with --ledger, check the path and the device's passphrase (commons key show --ledger --ledger-path <path> prints a path's signer); else give the right key", Peer: want, Exit: ExitDidNotStart}
+}
+
+// unheldKeyWarning warns when the store holds no line of the key the event retires: a first-line key event is valid,
+// but under --ledger it is the likely sign of a wrong path or passphrase (another key than the one meant).
+func unheldKeyWarning(out *Obj, k wire.Key, held int) {
+	if _, onDevice := k.(*deviceKey); onDevice {
+		out.set("signer", refV(k.Signer()))
+	}
+	if held == 0 {
+		out.set("warning_key_not_held", textV("this store holds no line of "+k.Signer()+": if that is not the key you meant to retire, check the device path and passphrase (or the key file), or give --expect-signer"))
+	}
+}
 
 // deviceKey is a wire.Key whose signature is made by the device. Sign has no error return, so a device failure
 // (a refusal, a timeout, an interrupt) is kept in err and the caller checks it before the line is used.
@@ -85,6 +118,7 @@ func signKeyEvent(c *Ctx, d wire.Draft, k wire.Key) (signed, *Obj, error) {
 		return signed{st, st.Line()}, nil, nil
 	}
 	if _, dry := c.Flag("dry-run"); dry {
+		// the device was opened and its address read (it is the log the event extends); it is not asked to sign
 		env := d.Envelope(k)
 		ss := wire.PAE(wire.PayloadType(d.Kind, wire.Major), canon.Encode(env))
 		ts, _ := rctime.ParseUTC(d.TS) // checked by prepareCommon
@@ -92,19 +126,22 @@ func signKeyEvent(c *Ctx, d wire.Draft, k wire.Key) (signed, *Obj, error) {
 			Merges: d.Merges, TS: ts, Body: d.Body, SignedString: ss, Status: wire.Valid}
 		// the dry run's line is the unsigned envelope: commitUnit's dry run prints the statement and writes nothing
 		return signed{st, canon.Encode(env)}, newObj().set("device", deviceObj(dk.o, dk.s)).set("device_shows", eip191Display(st)).
-			set("would_sign", textV("on the device, after you approve it there; nothing was sent to the device in this dry run")), nil
+			set("would_sign", textV("on the device, after you approve it there; this dry run read the device's address and asked it to sign nothing")), nil
 	}
 	st, err := wire.Write(d, k, Now())
 	if dk.err != nil {
 		return signed{}, nil, ledgerProblem(dk.err, "nothing was signed or appended")
 	}
-	if err != nil {
-		return signed{}, nil, err
-	}
-	if st.Status != wire.Valid {
+	if err != nil || st.Status != wire.Valid {
+		why := "not valid"
+		if err != nil {
+			why = err.Error()
+		} else {
+			why = string(st.Status)
+		}
 		// the reader's own check of the device's signature failed: the device is not the key it reported
 		return signed{}, nil, &Problem{Slug: "ledger-bad-signature", Title: "the device's signature does not verify", Class: refusal.Operational, Scope: "ledger device",
-			Detail: "the signature the device returned does not verify over the key event as " + k.Signer() + " (" + string(st.Status) + "); nothing was appended",
+			Detail: "the signature the device returned does not verify over the key event as " + k.Signer() + " (" + why + "); nothing was appended",
 			Next:   "check that the device is the one holding " + k.Signer() + ", then run the command again", Exit: ExitCouldNot}
 	}
 	return signed{st, st.Line()}, newObj().set("device", deviceObj(dk.o, dk.s)), nil
@@ -138,7 +175,7 @@ func setKeyEventCut(c *Ctx, out *Obj, k wire.Key, sts []signed, dev *Obj) {
 func deviceDryNote(c *Ctx, k wire.Key, o *Obj) {
 	if _, dry := c.Flag("dry-run"); dry && o != nil {
 		if _, onDevice := k.(*deviceKey); onDevice {
-			o.set("note", textV("dry run: nothing was sent to the device and nothing was written; the id above is the statement's (it does not depend on the signature)"))
+			o.set("note", textV("dry run: the device's address was read and it was asked to sign nothing; nothing was written; the id above is the statement's (it does not depend on the signature)"))
 		}
 	}
 }
