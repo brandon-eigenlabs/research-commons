@@ -17,6 +17,20 @@ effect until 1.0.0. See `docs/RELEASING.md` for the bump rules and release steps
   macOS each exchange is sent on a fresh Ledger HID channel (the device echoes it); Linux keeps channel 0x0101. On macOS
   a USB device is not named: attach one Ledger. KNOWN-LIMITS L-20 now covers Windows only. No change to what is signed,
   to the package flow, or to any signed byte, identifier, exit code or `--json` member.
+- `key sign --package <file> --yubikey` and `key show --yubikey`: a YubiKey's OpenPGP applet signs a package's PAE with its
+  signature key (`ed25519` over the PAE itself; `eip191-secp256k1` over the EIP-191 digest, the host making `s` low and
+  recovering `v` against the card's key), as `--ledger` does (#270). It reads no store; the package is checked as
+  `package show` checks it, the card's key must be the package's signer, `--expect-pae-sha256` is honoured, the PIN is
+  asked on the terminal with echo off (never from a pipe, an argument, the environment or a file; the terminal's mode is
+  restored on every exit, a signal included), an Ed25519 PAE over 3,072
+  bytes is refused before the card is asked (commands are chained, so the card's own buffer is the limit), and the
+  signature is verified by the reader's own rule before anything is written. It warns, and still signs, when touch is
+  off or cached, when the PIN policy is once, and for a secp256k1 key on firmware before 5.7 (Yubico YSA-2024-03); a
+  request the card waited on for a touch is reported as no touch. The card is reached through the system's smart-card
+  service without cgo (macOS; other systems: not built yet). Drilled by hand on a YubiKey 5C, firmware 5.4.3, macOS
+  arm64: an `--as` edition, an inception and a grant signed on the card for each algorithm. KNOWN-LIMITS L-07 names both connectors.
+  `golang.org/x/sys` becomes a direct dependency for the terminal's echo; it was already in `go.mod` through
+  `x/crypto`, so no module is added. No change to any byte, package or exit code of an existing command.
 
 - A collection genesis may name an identity as a controller. `publish --draft` of a `genesis` whose `controllers` hold
   typed subjects (`{"identity": "<id>"}` and/or `{"key": "<key>"}`, sorted and duplicate-free) is signed from a bare key

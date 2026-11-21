@@ -174,13 +174,13 @@ var limits = []limit{
 	},
 	{
 		id:  "L-07",
-		gap: "The only hardware connector is a Ledger device running the Ethereum app (`eip191-secp256k1`, through `key sign --ledger`); no other device or wallet is driven",
+		gap: "The hardware connectors are a Ledger device running the Ethereum app (`eip191-secp256k1`, `--ledger`) and a YubiKey's OpenPGP applet (`ed25519` or `eip191-secp256k1`, `key sign --yubikey`, macOS only so far); no other device or wallet is driven",
 		sources: []limitSource{
-			{file: "docs/DESIGN-notes-fixed-root-identity.md", says: "no other hardware or wallet connector is built."},
+			{file: "docs/DESIGN-notes-fixed-root-identity.md", says: "macOS so far) (§8); no other hardware or wallet connector is built."},
 			{file: "docs/DESIGN-notes-fixed-root-identity.md", says: "A key file signer is not a hardware or wallet connector."},
-			{help: []string{"key", "sign"}, says: "The Ledger connector is the only hardware or wallet connector"},
+			{help: []string{"key", "sign"}, says: "The Ledger and YubiKey connectors are the only hardware or wallet connectors"},
 		},
-		probe:  "`key sign --help` offers `--key` and `--ledger` and no other device, wallet or connector option; `identity grant --help` offers `--prepare`/`--complete` and opens no device",
+		probe:  "`key sign --help` offers `--key`, `--ledger` and `--yubikey` and no other device, wallet or connector option; `identity grant --help` offers `--prepare`/`--complete` and opens no device",
 		closes: "a connector for another device or wallet (an Ed25519 signer, a wallet)",
 		open: func(t *testing.T) (bool, string) {
 			h := runIn(t.TempDir(), nil, "identity", "grant", "--help")
@@ -188,18 +188,18 @@ var limits = []limit{
 				return false, "identity grant offers no external-signing package"
 			}
 			k := runIn(t.TempDir(), nil, "key", "sign", "--help")
-			if !strings.Contains(k.stdout, "--key") || !strings.Contains(k.stdout, "--ledger") {
-				return false, "key sign takes no key file or no --ledger"
+			if !strings.Contains(k.stdout, "--key") || !strings.Contains(k.stdout, "--ledger") || !strings.Contains(k.stdout, "--yubikey") {
+				return false, "key sign takes no key file, no --ledger or no --yubikey"
 			}
-			for _, w := range []string{"--device", "--wallet", "--connector", "--hardware", "--yubikey", "--trezor"} {
-				if strings.Contains(h.stdout, w) || strings.Contains(h.stdout, "--ledger") {
+			for _, w := range []string{"--device", "--wallet", "--connector", "--hardware", "--trezor", "--keystone", "--piv"} {
+				if strings.Contains(h.stdout, w) || strings.Contains(h.stdout, "--ledger") || strings.Contains(h.stdout, "--yubikey") {
 					return false, "identity grant offers a device option"
 				}
 				if strings.Contains(k.stdout, w) {
 					return false, "key sign offers " + w
 				}
 			}
-			return true, "key file, external-signing package and the Ledger Ethereum app only"
+			return true, "key file, external-signing package, the Ledger Ethereum app and the YubiKey OpenPGP applet only"
 		},
 	},
 	{

@@ -21,10 +21,10 @@ func init() {
 		Run:  keyNewCmd})
 	Register(&Command{Name: "key show", Summary: "print the signer and algorithm of a key file (never the key), or of a Ledger device's key",
 		Args:  []Arg{{Name: "file", Shape: ShapeText, Optional: true}},
-		Flags: []Flag{ledgerFlag, ledgerPathFlag, ledgerDeviceFlag, ledgerTimeoutFlag, ledgerConfirmFlag},
+		Flags: []Flag{ledgerFlag, ledgerPathFlag, ledgerDeviceFlag, ledgerTimeoutFlag, ledgerConfirmFlag, yubikeyFlag, yubikeyReaderFlag},
 		Help: "With a key file: its signer and algorithm. With --ledger --ledger-path <path> (no file): the address of a Ledger device's key at that path, " +
 			"read from the Ethereum app, with the app's name and version, the path and the device; --ledger-confirm also shows the address on the device " +
-			"and waits for you to confirm it there (a refusal on the device is exit 1, and no signer is printed)." + ledgerHelp,
+			"and waits for you to confirm it there (a refusal on the device is exit 1, and no signer is printed)." + ledgerHelp + yubikeyHelp,
 		Run: keyShowCmd})
 }
 
@@ -78,12 +78,20 @@ func keyNewCmd(c *Ctx) (*Obj, int, error) {
 }
 
 func keyShowCmd(c *Ctx) (*Obj, int, error) {
+	// --yubikey first: it refuses --ledger beside it, before either device is opened
+	yk, reader, prob := yubikeyOptions(c)
+	if prob != nil {
+		return nil, 0, prob
+	}
 	o, prob := ledgerOptions(c)
 	if prob != nil {
 		return nil, 0, prob
 	}
 	if o != nil {
 		return keyShowLedger(c, o)
+	}
+	if yk {
+		return keyShowYubiKey(c, reader)
 	}
 	if c.Args["file"] == "" {
 		return nil, 0, usage("missing-argument", "a required argument is missing", "name the key file, or give --ledger --ledger-path <path>; nothing was done",

@@ -5,8 +5,9 @@ interprets `rc/2` under this profile and evaluates identity actors from the stat
 signs `rc/2` for the administrative kinds (`identity new`, `identity grant`, `identity cut`) and for an act
 for an identity (`publish --as <I> --grant <G>`); every other statement, raw `rotate_key`/`revoke_key`
 included, is still written `rc/1` (§2.1). Each of those commands can stop at an external-signing package and
-commit a signature made elsewhere (§8). The one hardware connector is a Ledger device running the Ethereum app
-(`eip191-secp256k1`, §8); no other hardware or wallet connector is built.
+commit a signature made elsewhere (§8). The hardware connectors are a Ledger device running the Ethereum app
+(`eip191-secp256k1`, `--ledger`) and a YubiKey's OpenPGP applet (`ed25519` or `eip191-secp256k1`, `--yubikey`, macOS
+so far) (§8); no other hardware or wallet connector is built.
 The `rc/2` bytes, ids and domain separation this profile defines, and the interchange files `rc-key/0` and
 `rc-signing-package/1` (§8), are **frozen at 1.0** after an independent freeze review (§9, Completion boundary).
 Where the text below says "candidate", it names the profile as first proposed; the bytes are the frozen ones.
@@ -909,10 +910,30 @@ emulator, accepts about 7.6 KB of printable text (about 5.1 KB when the display 
 limit set by its memory that may differ on a device, so the
 tool leaves the decision to the app rather than refusing at a guessed size.
 
-YubiKey 5 is an **untested family**: exact variant/firmware and interface matter;
-Ed25519 PIV support must be established, not inferred from the family name (5.7+
-capability is not every YubiKey 5). WebAuthn assertions or OpenPGP packets do not replace
-the required raw proof. MetaMask EOA testing must use synthetic/test accounts. Unsupported
+**YubiKey 5, tested by hand through the package (#250).** On a YubiKey 5C, firmware 5.4.3,
+the route is the **OpenPGP applet**, not PIV: PIV has Ed25519 only from firmware 5.7 and no
+secp256k1 at all, while the OpenPGP signature slot offers both curves (Yubico states 5.2.3 and
+later for OpenPGP elliptic curves; only 5.4.3 was tested). With a key generated in that slot,
+driven by Yubico's own library, an inception was prepared, signed on the card and completed for
+each algorithm, and `fsck` was clean: for `ed25519` the card signs the PAE bytes themselves (pure
+Ed25519, no prehash; 3,055 bytes signed, the library's command-size cap above that), and its
+64-byte signature is the CLI's form unchanged; for `eip191-secp256k1` the card signs the
+EIP-191 digest the host computes, and the host puts the result in the stored form (low `s`, `v`
+recovered against the card's public key). `key sign --package <file> --yubikey` and `key show --yubikey` drive it (#270): the
+package is checked as `package show` checks it, the card's key must be the package's signer, the PIN is asked on the
+terminal, an Ed25519 PAE over 3,072 bytes is refused before the card is asked, and the card's signature is verified by
+the reader's own rule before anything is written. The command warns, and still signs, when the signature key's touch
+policy is off or cached, when the PIN policy is once, and for a secp256k1 key on firmware before 5.7 (YSA-2024-03).
+Drilled by hand through these commands (#270) on a YubiKey 5C, firmware 5.4.3, on macOS arm64, for each algorithm: with a key imported into the slot, an `--as` edition prepared for it was signed on the card and completed, `verify` and `fsck` clean; with a key generated on the card, an inception and then a grant were signed on it and completed, `fsck` clean. The drill found that the card stores no fingerprint for a key Yubico's library generated or imported (only an OpenPGP host program writes one), so an empty slot is told by its public-key read (`6581` on 5.4.3), not by the fingerprint. Linux and other firmware are not drilled. #250 has the script that preceded it. Two custody points differ from the Ledger. **The card signs blind:** it has no display, so
+the only review is `package show --expect-pae-sha256` on the machine the card is plugged into,
+and that machine must be trusted, which a Ledger's own screen avoids. **There is no backup under
+`fixed-root-v1`:** a key generated on the card cannot leave it, so a lost card is a lost
+identity. The two choices are on-card generation (optionally with the card's attestation that
+the key was generated there) or generation offline with a backup, imported to the card, which
+gives up on-card generation. A touch policy on the signature key proves presence, not informed
+approval. Other YubiKey models, firmware and interfaces remain untested. WebAuthn assertions or
+OpenPGP packets do not replace the required raw proof: the card's raw signature is used, never
+an OpenPGP packet. MetaMask EOA testing must use synthetic/test accounts. Unsupported
 signing must fail, not silently change algorithm/preimage. A valid signature does not
 prove safe informed approval or custody quality. GitHub can transport unsigned packages
 and logs without holding a root; a secret-bearing workflow is optional, user-owned,

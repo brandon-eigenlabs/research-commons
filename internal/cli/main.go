@@ -52,6 +52,11 @@ type Env struct {
 	// one attached by USB, a hidraw node, or tcp:<host>:<port> for an emulator); nil in a build without the
 	// connector (both then answer "the Ledger connector is not available in this build", exit 3).
 	Ledger LedgerOpener
+	// YubiKey connects to a YubiKey for `key show --yubikey` and `key sign --yubikey` (the reader's name, or "" for the
+	// only one attached); nil in a build without the smart-card connector.
+	YubiKey YubiKeyOpener
+	// ReadPIN reads a card's PIN from the terminal without echo; nil when no terminal is attached.
+	ReadPIN PINReader
 	// Interrupt starts watching for the user's interrupt (SIGINT, SIGTERM) around an exchange that waits for the
 	// holder on a device (a review): it returns a channel that delivers the signal's name and a stop function
 	// (idempotent) that restores the default handling. nil: nothing is watched and an interrupt ends the process

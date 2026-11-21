@@ -15,6 +15,7 @@ import (
 	"github.com/research-common/research-commons/internal/clirun"
 	"github.com/research-common/research-commons/internal/ledger"
 	"github.com/research-common/research-commons/internal/otscal"
+	"github.com/research-common/research-commons/internal/smartcard"
 	"github.com/research-common/research-commons/internal/store"
 )
 
@@ -38,6 +39,12 @@ func main() {
 	// The Ledger connector is opened only by `key show --ledger` and `key sign --ledger`, the signer's explicit
 	// requests.
 	env.Ledger = ledger.Open
+	// The YubiKey connector is opened only by `key show --yubikey` and `key sign --yubikey`; its PIN is read from the
+	// terminal with echo off, never from an argument, the environment or a file.
+	if smartcard.Built {
+		env.YubiKey = func(reader string) (smartcard.Card, string, error) { return smartcard.Open(reader, "YubiKey") }
+	}
+	env.ReadPIN = readPIN
 	// SIGINT and SIGTERM are caught only while a device waits for the holder's review, so the command can close
 	// the device cleanly and say that a review may still be open on it; anywhere else they act as the system's.
 	env.Interrupt = interrupts
