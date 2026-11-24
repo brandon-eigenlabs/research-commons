@@ -336,8 +336,8 @@ func TestRR10EscrowedRevokeThenRecovery(t *testing.T) {
 	inc := w.inception("R0", "C0")
 	I := inc.ID
 	d := w.delegate("d1")
-	rv := w.revoke("R0", I)       // signed at the first line, kept offline
-	g := w.grant("R0", I, I, d)   // the root goes on signing on another branch (a fork at the inception)
+	rv := w.revoke("R0", I)     // signed at the first line, kept offline
+	g := w.grant("R0", I, I, d) // the root goes on signing on another branch (a fork at the inception)
 	a := w.act("d1", d.ID, I, g)
 	expect(t, snapshot(t, without(slices.Clone(w.facts), rv.ID)), a, Eligible, "", 0)
 	expect(t, w.snapshot(t), a, Denied, "root_retired", 0)
@@ -513,7 +513,7 @@ func TestRR17And28DelegateActsAcrossARecovery(t *testing.T) {
 	expect(t, before, av, Eligible, "", 0)
 	s1, _, h := w.recover("R0", gv.ID, I, gk.ID, "C0", "R1", "C1")
 	after := w.snapshot(t)
-	expect(t, after, ak, Eligible, "", 1)         // (a) a grant inside the kept prefix
+	expect(t, after, ak, Eligible, "", 1)              // (a) a grant inside the kept prefix
 	expect(t, after, av, Denied, "recovery_voided", 0) // (b) a grant the recovery voids, whenever the act was signed
 	// (c) the new root cuts a grant the old root issued.
 	w.cut("R1", s1.ID, I, gk.ID, LastGood{Mode: PreserveNone})
@@ -659,7 +659,7 @@ func TestRR27AbandonedSignedRecovery(t *testing.T) {
 	gt := w.grant("R0", g.ID, I, td)
 	a := w.act("d1", d.ID, I, g)
 	sA := w.succession("R1", I)
-	recA := w.recovery("C0", I, g.ID, &sA, "C1") // signed, then set aside
+	recA := w.recovery("C0", I, g.ID, &sA, "C1")       // signed, then set aside
 	w.recover("R0", g.ID, I, g.ID, "C0", "R1b", "C1b") // the owner publishes B
 	expect(t, w.snapshot(t), a, Eligible, "", 1)
 	w.handover("R0", gt.ID, I, recA) // a holder of R0 obtains A's bytes

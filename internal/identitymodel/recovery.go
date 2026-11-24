@@ -32,8 +32,8 @@ type effect struct {
 type generations struct {
 	profile Profile
 	gens    []generation
-	closed  bool   // the last generation ended with a recovery naming no successor
-	settled bool   // the chain was read to its end: no unresolved handover, no rivals, no cap
+	closed  bool // the last generation ended with a recovery naming no successor
+	settled bool // the chain was read to its end: no unresolved handover, no rivals, no cap
 	roots   map[Key]bool
 }
 
